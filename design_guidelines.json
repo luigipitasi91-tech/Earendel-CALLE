@@ -1,0 +1,146 @@
+{
+  "project_name": "Future Call AI",
+  "tagline": "Say what you need. Future Call AI handles the call and proves what happened.",
+  "theme": {
+    "archetype": "Swiss Tactical & Trustworthy",
+    "mode": "light_first_with_dark_slate_accents",
+    "core_invariants": [
+      "CALL COMPLETED != TASK COMPLETED",
+      "AI CLAIMS SUCCESS != VERIFIED SUCCESS",
+      "PROVIDER SUCCESS != USER GOAL SUCCESS",
+      "Never display 'Done' or 'Completed successfully' without explicit supporting evidence for every required success condition"
+    ]
+  },
+  "colors": {
+    "brand_primary": {
+      "name": "Tactical Navy / Cobalt",
+      "hex": "#0F172A",
+      "slate_dark": "#1E293B",
+      "accent_blue": "#2563EB",
+      "accent_sky": "#0284C7"
+    },
+    "surface": {
+      "background_page": "#F8FAFC",
+      "card_background": "#FFFFFF",
+      "card_subtle": "#F1F5F9",
+      "card_border": "#E2E8F0",
+      "guardian_shield_bg": "#FEF2F2",
+      "guardian_shield_border": "#FECACA"
+    },
+    "status_verdict": {
+      "VERIFIED_SUCCESS": {
+        "badge_bg": "#DCFCE7",
+        "badge_text": "#15803D",
+        "border": "#86EFAC",
+        "hero_glow": "rgba(34, 197, 94, 0.15)",
+        "icon": "ShieldCheck",
+        "description": "All success criteria explicitly confirmed with supporting transcript & audio evidence."
+      },
+      "PARTIAL": {
+        "badge_bg": "#FEF3C7",
+        "badge_text": "#B45309",
+        "border": "#FDE047",
+        "hero_glow": "rgba(245, 158, 11, 0.15)",
+        "icon": "AlertTriangle",
+        "description": "Call finished and some goals achieved, but 1+ required conditions remain unverified or unmet."
+      },
+      "UNKNOWN": {
+        "badge_bg": "#F1F5F9",
+        "badge_text": "#475569",
+        "border": "#CBD5E1",
+        "hero_glow": "rgba(100, 116, 139, 0.15)",
+        "icon": "HelpCircle",
+        "description": "Call ended without sufficient evidence to confirm or deny task fulfillment."
+      },
+      "FAILED": {
+        "badge_bg": "#FEE2E2",
+        "badge_text": "#B91C1C",
+        "border": "#FCA5A5",
+        "hero_glow": "rgba(239, 68, 68, 0.15)",
+        "icon": "XCircle",
+        "description": "Goal unfulfilled, constraint violated, or call failed before meeting success criteria."
+      }
+    },
+    "telephony_badges": {
+      "REAL": {
+        "bg": "#EFF6FF",
+        "text": "#1D4ED8",
+        "border": "#BFDBFE"
+      },
+      "SIMULATED": {
+        "bg": "#F5F3FF",
+        "text": "#6D28D9",
+        "border": "#DDD6FE"
+      },
+      "NOT_CONFIGURED": {
+        "bg": "#FEF2F2",
+        "text": "#C2410C",
+        "border": "#FFEDD5"
+      }
+    }
+  },
+  "typography": {
+    "font_family_headings": "Cabinet Grotesk, Outfit, system-ui, sans-serif",
+    "font_family_body": "Inter, DM Sans, sans-serif",
+    "font_family_mono": "JetBrains Mono, SFMono-Regular, monospace",
+    "scale": {
+      "h1_hero": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight leading-tight",
+      "h2_section": "text-xl sm:text-2xl font-bold tracking-tight text-slate-900",
+      "h3_card": "text-lg font-semibold text-slate-800",
+      "body_base": "text-sm sm:text-base text-slate-700 leading-relaxed",
+      "caption_mono": "font-mono text-xs sm:text-sm tracking-wide text-slate-500",
+      "badge_text": "text-xs font-bold tracking-wider uppercase"
+    }
+  },
+  "responsive": {
+    "breakpoint": "mobile-first",
+    "layout": "Single-column mobile view with sticky footer CTA, expanding to multi-column desktop dashboard with lateral preview panel.",
+    "typography": "Mobile responsive scales with min 16px input font size to avoid iOS zoom. Headings scale smoothly from mobile 28px to desktop 48px.",
+    "overflow_guard": "All scrollable areas (live transcripts, evidence tables, JSON contracts) wrapped in overflow-x-hidden / overflow-y-auto to prevent body scroll jitter.",
+    "tap_targets": "Minimum interactive target height 44px (buttons, tabs, switches, step triggers)."
+  },
+  "components": {
+    "request_input_screen": {
+      "path": "frontend/src/components/RequestInputScreen.js",
+      "description": "Natural language prompt bar with quick presets (e.g., 'Reschedule dental appointment', 'Cancel gym membership with proof', 'Inquire flight refund policy'), audio note toggle, and quick goal extraction preview."
+    },
+    "goal_contract_card": {
+      "path": "frontend/src/components/GoalContractCard.js",
+      "description": "Editable structure showing: Goal Intent, Preferred Outcome, Hard Constraints, Permitted Data, Forbidden Data/Actions, and Explicit Success Conditions. Includes interactive toggle to edit constraints before approval."
+    },
+    "guardian_approval_screen": {
+      "path": "frontend/src/components/GuardianApprovalScreen.js",
+      "description": "Explicit permission checkpoint. Details permitted phone actions, data authorization toggles (e.g. share email, share order #), revocable consent switch, and 'Authorize Agent Call' CTA."
+    },
+    "call_in_progress_screen": {
+      "path": "frontend/src/components/CallInProgressScreen.js",
+      "description": "Live status panel featuring Telephony Badges (REAL / SIMULATED / NOT CONFIGURED), real-time simulated waveform/audio pulses, live turn-by-turn transcript feed, and immediate 'Emergency Revoke/Hang Up' control."
+    },
+    "evidence_verification_matrix": {
+      "path": "frontend/src/components/EvidenceVerificationMatrix.js",
+      "description": "Strict verification mapping: Requirement -> Evidence Chunk -> Transcript Source Timestamp -> Verification State. Visually highlights missing or weak evidence."
+    },
+    "result_screen": {
+      "path": "frontend/src/components/ResultScreen.js",
+      "description": "Hero status banner with distinct visual treatments for VERIFIED SUCCESS, PARTIAL, UNKNOWN, FAILED. Never displays generic 'Done' without detailed evidence breakdown."
+    },
+    "call_history_drawer": {
+      "path": "frontend/src/components/CallHistoryDrawer.js",
+      "description": "Drawer or sidebar with previous runs, filterable by verdict state and execution mode."
+    }
+  },
+  "image_urls": {
+    "phone_security_desk": "https://images.unsplash.com/photo-1584433144859-1fc3ab64a957?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzF8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBzbWFydHBob25lJTIwY2FsbCUyMGFnZW50JTIwaWxsdXN0cmF0aW9uJTIwdHJ1c3QlMjB0ZWNobm9sb2d5fGVufDB8fHx8MTc4ODcyNDQ0NHww&ixlib=rb-4.1.0&q=85",
+    "call_interface_dial": "https://images.unsplash.com/photo-1787834565306-6cc7169397e3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzF8MHwxfHNlYXJjaHw0fHxtb2Rlcm4lMjBzbWFydHBob25lJTIwY2FsbCUyMGFnZW50JTIwaWxsdXN0cmF0aW9uJTIwdHJ1c3QlMjB0ZWNobm9sb2d5fGVufDB8fHx8MTc4ODcyNDQ0NHww&ixlib=rb-4.1.0&q=85",
+    "customer_support_team": "https://images.unsplash.com/photo-1626863905121-3b0c0ed7b94c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDJ8MHwxfHNlYXJjaHwxfHxjdXN0b21lciUyMHNlcnZpY2UlMjBwaG9uZXxlbnwwfHx8fDE3ODg3MjQ0NTV8MA&ixlib=rb-4.1.0&q=85",
+    "ip_phone_office": "https://images.unsplash.com/photo-1525182008055-f88b95ff7980?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDJ8MHwxfHNlYXJjaHwyfHxjdXN0b21lciUyMHNlcnZpY2UlMjBwaG9uZXxlbnwwfHx8fDE3ODg3MjQ0NTV8MA&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": [
+    "Ensure every state transition follows the vertical slice: REQUEST -> GOAL CONTRACT -> GUARDIAN APPROVAL -> CALL -> EVIDENCE -> VERIFY -> RESULT.",
+    "Add explicit data-testid attributes to all interactive elements, form fields, badges, and status cards.",
+    "Do NOT use generic 'Done' or 'Success' text unless all explicit success conditions are verified by evidence chunks.",
+    "Provide interactive sample presets (e.g., Dentist Reschedule, Cancel Subscription, Hotel Late Check-in Request) to let users test simulated & real workflows immediately.",
+    "Make the Guardian Approval layer feel security-focused with clear toggles for forbidden data/actions and an emergency stop button during calls.",
+    "Ensure all components are mobile-first with smooth tab/stepper navigation and clean typography."
+  ]
+}

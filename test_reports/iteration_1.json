@@ -1,0 +1,33 @@
+{
+  "summary": "First-cycle smoke test of Future Call AI vertical slice. All backend invariants + pytest suite pass. UI flow works end-to-end for cooperative (VERIFIED SUCCESS) and extra_fee (FAILED with contradicting evidence).",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "passed": [
+    "pytest backend/tests/test_invariants.py -> 11/11 passed",
+    "GET /api/telephony/status -> mode=NOT_CONFIGURED, missing=[TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,TWILIO_FROM_NUMBER,PUBLIC_BASE_URL,TWILIO_CONVERSATION_RELAY_WSS_URL], llm_configured=true",
+    "GET /api/simulator/scenarios -> 6 scenarios present (cooperative, extra_fee, no_charge_unclear, voicemail, forbidden_probe, provider_failed)",
+    "POST /api/contracts (request_text=demo) -> success_conditions include kind 'affirmative' (friday/afternoon) and kind 'no_charge'",
+    "POST /api/contracts/{cid}/execute WITHOUT consent -> HTTP 403 with Guardian message",
+    "After /consent granted -> execute SIMULATED cooperative -> goal_state=VERIFIED_SUCCESS with per_condition A & B both CONFIRMED",
+    "scenario extra_fee -> FAILED with contradicting evidence for no_charge",
+    "scenario no_charge_unclear -> PARTIAL",
+    "scenario voicemail -> UNKNOWN",
+    "scenario provider_failed -> FAILED",
+    "scenario forbidden_probe -> guardian_blocks populated (=1); verdict FAILED (both success conditions not confirmed, so VERIFIED_SUCCESS correctly withheld)",
+    "POST /revoke then /execute -> HTTP 403",
+    "POST /execute mode=REAL while NOT_CONFIGURED -> HTTP 400 with 'NOT_CONFIGURED' + list of missing env vars",
+    "UI: NOT CONFIGURED telephony badge visible on load",
+    "UI: compile-contract-btn -> contract-success-conditions rendered",
+    "UI: Continue -> Guardian screen -> consent-switch + scenario-select cooperative -> authorize-btn -> result-screen with verdict-badge 'VERIFIED SUCCESS', SIMULATED mode badge, both evidence rows CONFIRMED",
+    "UI: extra_fee flow -> verdict-badge 'FAILED' with CONTRADICTED evidence row rendered"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "notes": {
+    "contract_field_name": "POST /api/contracts uses field 'request_text' (not 'user_text'); consistent with server schema and frontend usage.",
+    "forbidden_probe_behavior": "Guardian_blocks populated as required; verdict FAILED because scenario transcript does not confirm both success conditions — matches invariant 'VERIFIED_SUCCESS ONLY IF both confirmed'.",
+    "test_credentials": "N/A — no auth in this slice."
+  },
+  "full_testing_deferred": true
+}
