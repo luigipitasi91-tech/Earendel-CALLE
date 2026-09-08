@@ -31,11 +31,28 @@ AFFIRM_PATTERNS = [
     r"\bwithout any charge\b", r"\bcomplimentary\b",
 ]
 
-DENY_PATTERNS = [
-    r"\bno\b", r"\bcannot\b", r"\bcan't\b", r"\bunable\b", r"\bnot able\b",
-    r"\bunavailable\b", r"\bwe don't\b", r"\bwe do not\b", r"\bimpossible\b",
-    r"\brefuse\b", r"\bdeclined\b",
+# Strict, explicit contradiction constructs. A recipient turn only counts as
+# a CONTRADICTION when one of these patterns is present in the SAME utterance
+# as the keyword. A bare "no" (e.g. "no problem") is NOT a contradiction.
+STRONG_DENY_PATTERNS = [
+    r"\bcannot\b", r"\bcan(?:'|no)t\b", r"\bcan not\b",
+    r"\bunable\b", r"\bnot able\b",
+    r"\bunavailable\b", r"\bnot available\b",
+    r"\bwon't\b", r"\bwill not\b",
+    r"\bimpossible\b", r"\brefuse[ds]?\b", r"\bdeclined?\b",
+    r"\bwe (don't|do not) (do|allow|offer|have)\b",
+    r"\bnot\s+(?:be|been|going to be|going)\s+(?:moved|rescheduled|changed|available)\b",
+    r"\bnot\s+(?:possible|going to (?:happen|work))\b",
+    r"\b(?:remains|stays|staying|stays put)\b\s+(?:on|at|as|the same)\b",
+    r"\boriginal (?:slot|appointment|booking)\s+(?:stays|remains)\b",
+    r"\bstays as is\b",
+    r"\bkeep(?:ing)?\s+(?:the|your)\s+(?:current|existing)\s+(?:slot|appointment|booking)\b",
 ]
+
+# Direct negation of a specific keyword: "not friday", "no friday", "never friday".
+def _keyword_negated(low: str, keyword: str) -> bool:
+    kw = re.escape(keyword)
+    return bool(re.search(rf"\b(?:not|no|never)\s+(?:on\s+|at\s+|going\s+to\s+be\s+)?{kw}\b", low))
 
 CHARGE_PRESENT_PATTERNS = [
     r"\$\s?\d+", r"\bfee of\b", r"\bcharge of\b", r"\bthere (is|will be) (a|an) (charge|fee|cost|surcharge)\b",
@@ -103,23 +120,49 @@ def evaluate_condition(condition: dict, transcript: list[dict]) -> dict:
                 contradicting_evidence.append({"turn": turn, "match": neg})
 
         elif kind == "affirmative":
-            # Positive: keyword present AND affirmation nearby.
             keyword_hit = next((k for k in keywords if k in low), None)
+
+            # SUPPORTING: keyword present AND explicit affirmation nearby.
             if keyword_hit and _has(low, AFFIRM_PATTERNS):
-                matched_evidence.append(
-                    {"turn": turn, "match": keyword_hit}
-                )
-            # Negative: keyword present + denial.
-            if keyword_hit and _has(low, DENY_PATTERNS) and not _has(low, AFFIRM_PATTERNS):
-                contradicting_evidence.append(
-                    {"turn": turn, "match": keyword_hit}
-                )
+                matched_evidence.append({"turn": turn, "match": keyword_hit})
+                continue  # a single utterance is not both supporting and contradicting
+
+            # For movement-type requirements ("moved to ...", "rescheduled to ..."),
+            # an explicit "stays on / remains on / original slot stays" utterance
+            # contradicts the condition even without the target-day keyword.
+            requirement_low = (condition.get("text") or "").lower()
+            is_move_requirement = any(
+                w in requirement_low for w in ("moved", "reschedul", "changed")
+            )
+            anti_move = _find_evidence(low, [
+                r"\b(?:stays|remains|staying|remaining)\s+(?:on|at|as|the same)\b",
+                r"\boriginal (?:slot|appointment|booking)\s+(?:stays|remains)\b",
+                r"\bstays as is\b",
+                r"\bkeep(?:ing)?\s+(?:the|your)\s+(?:current|existing|original)\s+(?:slot|appointment|booking|time)\b",
+            ])
+            if is_move_requirement and anti_move:
+                contradicting_evidence.append({"turn": turn, "match": anti_move})
+                continue
+
+            # CONTRADICTING: only when there is an EXPLICIT denial construct in
+            # the same utterance as the keyword, OR when the keyword itself is
+            # directly negated. Bare "no" (e.g. "no problem") does NOT qualify.
+            if keyword_hit and (
+                _has(low, STRONG_DENY_PATTERNS) or _keyword_negated(low, keyword_hit)
+            ):
+                contradicting_evidence.append({"turn": turn, "match": keyword_hit})
+            # else: NEUTRAL / INSUFFICIENT — record nothing.
 
         else:  # custom
-            if all(k in low for k in keywords) and _has(low, AFFIRM_PATTERNS):
+            if not keywords:
+                continue
+            all_present = all(k in low for k in keywords)
+            if all_present and _has(low, AFFIRM_PATTERNS):
                 matched_evidence.append({"turn": turn, "match": ", ".join(keywords)})
-            if all(k in low for k in keywords) and _has(low, DENY_PATTERNS) and not _has(low, AFFIRM_PATTERNS):
+                continue
+            if all_present and _has(low, STRONG_DENY_PATTERNS):
                 contradicting_evidence.append({"turn": turn, "match": ", ".join(keywords)})
+            # else: NEUTRAL / INSUFFICIENT.
 
     # Contradiction takes precedence.
     if contradicting_evidence:

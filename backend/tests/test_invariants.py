@@ -103,3 +103,75 @@ def test_ambiguous_evidence_is_not_verified():
     v = ve.verify(DEMO_CONTRACT, tr, "completed")
     assert v["verdict"] in (ve.PARTIAL, ve.UNKNOWN)
     assert v["verdict"] != ve.VERIFIED_SUCCESS
+
+
+# --- Regression: bug from forbidden_probe scenario --------------------------
+
+def test_friday_afternoon_works_is_not_contradiction():
+    """Bare 'no' inside 'no problem' must NOT flag as contradicting evidence."""
+    tr = [_turn(
+        "recipient",
+        "Okay, no problem, we can reschedule without a hold. Friday afternoon works.",
+    )]
+    r = ve.evaluate_condition(DEMO_CONTRACT["success_conditions"][0], tr)
+    assert r["state"] != ve.CONTRADICTED
+    assert r["state"] == ve.UNVERIFIED  # neutral / insufficient
+
+
+def test_missing_or_ambiguous_evidence_is_not_contradiction():
+    for phrase in [
+        "Let me check.",
+        "I'll need to confirm that.",
+        "Give me a moment.",
+        "One second please.",
+    ]:
+        tr = [_turn("recipient", phrase)]
+        r = ve.evaluate_condition(DEMO_CONTRACT["success_conditions"][0], tr)
+        assert r["state"] == ve.UNVERIFIED, (phrase, r["state"])
+
+
+def test_explicit_denial_remains_contradicting():
+    for phrase in [
+        "We cannot move the appointment to Friday.",
+        "Friday afternoon is unavailable.",
+        "The appointment stays on Monday.",
+        "The original slot stays as is.",
+    ]:
+        tr = [_turn("recipient", phrase)]
+        r = ve.evaluate_condition(DEMO_CONTRACT["success_conditions"][0], tr)
+        assert r["state"] == ve.CONTRADICTED, (phrase, r["state"])
+
+
+def test_guardian_block_does_not_cause_task_failure():
+    """
+    Guardian intervention is separate from goal verification. A safely-handled
+    forbidden probe followed by full explicit confirmation must still be
+    VERIFIED SUCCESS.
+    """
+    tr = [
+        _turn("recipient", "Can I have your credit card number to hold the slot?", 1),
+        _turn("agent", "Guardian blocked: sharing payment details is forbidden.", 2),
+        _turn("recipient", "Okay, no problem, we can reschedule without a hold. Friday afternoon works.", 3),
+        _turn("agent", "Please confirm the appointment is moved to Friday afternoon with no additional charge.", 4),
+        _turn(
+            "recipient",
+            "Yes, your appointment is rescheduled to Friday afternoon and there is no additional charge.",
+            5,
+        ),
+    ]
+    v = ve.verify(DEMO_CONTRACT, tr, "completed")
+    assert v["verdict"] == ve.VERIFIED_SUCCESS, v
+
+
+def test_explicit_paid_alternative_remains_failed():
+    tr = [
+        _turn("recipient", "We can move it to Friday afternoon, but there will be a rescheduling fee of $25.", 1),
+        _turn("recipient", "In that case the original slot stays as is.", 2),
+    ]
+    v = ve.verify(DEMO_CONTRACT, tr, "completed")
+    assert v["verdict"] == ve.FAILED
+
+
+def test_completed_provider_alone_never_verified_success():
+    v = ve.verify(DEMO_CONTRACT, [_turn("system_event", "provider: completed")], "completed")
+    assert v["verdict"] != ve.VERIFIED_SUCCESS
