@@ -1,12 +1,29 @@
-import React, {useMemo, useState} from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ShieldCheck, PhoneCall, FileCheck2, Star, ChevronRight, CheckCircle2, HelpCircle, XCircle } from "lucide-react";
+import {
+  ShieldCheck, PhoneCall, FileCheck2, Star, ChevronRight,
+  CheckCircle2, HelpCircle, XCircle
+} from "lucide-react";
 import "./styles.css";
 
-const scenarios = {
+const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+
+const CONTRACT = {
+  goal: "Reschedule appointment",
+  preferred: "Friday afternoon",
+  hard_constraints: ["No additional charge"],
+  allowed_data: ["name", "booking reference"],
+  forbidden_actions: ["accept paid alternative", "share payment details"],
+  success_requirements: [
+    { id: "appointment", text: "Appointment moved to Friday afternoon", evidence_keywords: ["friday"] },
+    { id: "fee", text: "No additional charge", evidence_keywords: ["no additional charge"] }
+  ]
+};
+
+const simulationScenarios = {
   verified: {
     label: "Cooperative recipient",
-    result: "VERIFIED SUCCESS",
+    result: "VERIFIED_SUCCESS",
     evidence: [
       ["Appointment moved", "Yes, your appointment is rescheduled to Friday afternoon."],
       ["No additional charge", "There is no additional charge."]
@@ -33,105 +50,264 @@ const scenarios = {
       ["No additional charge", "There will be a £25 rescheduling charge."]
     ]
   }
+};
+
+async function jsonFetch(path, options = {}) {
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.detail || body.message || `HTTP ${response.status}`);
+  return body;
 }
 
-function Badge({children, kind=""}) { return <span className={`badge ${kind}`}>{children}</span>; }
+function Badge({ children, kind = "" }) {
+  return <span className={`badge ${kind}`}>{children}</span>;
+}
+
+function Card({ title, value }) {
+  return <div className="card"><span>{title}</span><b>{value}</b></div>;
+}
 
 function App() {
   const [step, setStep] = useState(0);
   const [consent, setConsent] = useState(false);
   const [scenario, setScenario] = useState("verified");
   const [rating, setRating] = useState(0);
-  const s = scenarios[scenario];
-  const stateClass = s.result.toLowerCase().replace(" ","-");
+  const [mode, setMode] = useState("simulated");
+  const [phone, setPhone] = useState("");
+  const [request, setRequest] = useState(
+    "Move my appointment to Friday afternoon, but only if there is no additional charge."
+  );
+  const [calle, setCalle] = useState({ configured: false, mode: "NOT_CONFIGURED" });
+  const [liveResult, setLiveResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const sim = simulationScenarios[scenario];
+  const displayedResult = mode === "live" && liveResult
+    ? {
+        result: liveResult.goal_state,
+        evidence: [
+          ["Appointment moved", evidenceText(liveResult, "appointment")],
+          ["No additional charge", evidenceText(liveResult, "fee")]
+        ]
+      }
+    : sim;
+
+  const stateClass = (displayedResult.result || "unknown").toLowerCase().replaceAll("_", "-");
+
+  useEffect(() => {
+    jsonFetch("/calle/readiness")
+      .then(setCalle)
+      .catch(() => setCalle({ configured: false, mode: "NOT_CONFIGURED" }));
+  }, []);
+
+  async function authorizeAndRun() {
+    setError("");
+    if (!consent) return;
+
+    if (mode === "simulated") {
+      setStep(3);
+      return;
+    }
+
+    if (!calle.configured) {
+      setError("CALL-E is not configured on the server.");
+      return;
+    }
+    if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+      setError("Enter the destination in E.164 format, for example +447700900123.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const created = await jsonFetch("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ intent: request, recipient: "Live recipient", contract: CONTRACT })
+      });
+
+      await jsonFetch("/consent", {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: created.task_id,
+          recipient: "Live recipient",
+          purpose: "Reschedule appointment",
+          allowed_data: CONTRACT.allowed_data,
+          forbidden_actions: CONTRACT.forbidden_actions,
+          constraints: CONTRACT.hard_constraints,
+          approved: true
+        })
+      });
+
+      const result = await jsonFetch("/calls/calle/live", {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: created.task_id,
+          phone,
+          region: "GB",
+          locale: "en-GB"
+        })
+      });
+
+      setLiveResult(result);
+      setStep(4);
+    } catch (e) {
+      setError(e.message || "Live CALL-E request failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return <div className="shell">
     <header>
-      <div className="brand"><ShieldCheck size={22}/> Future Call AI</div>
-      <Badge kind="muted">NOT CONFIGURED</Badge>
+      <div className="brand"><ShieldCheck size={22} /> Future Call AI</div>
+      <Badge kind={calle.configured ? "ready" : "muted"}>
+        {calle.configured ? "CALL-E READY" : "NOT CONFIGURED"}
+      </Badge>
     </header>
 
     <div className="steps">
-      {["Request","Contract","Guardian","Call","Result"].map((x,i)=>
-        <div className={`step ${i===step?"active":i<step?"done":""}`} key={x}>
-          <span>{i+1}</span>{x}
+      {["Request", "Contract", "Guardian", "Call", "Result"].map((x, i) =>
+        <div className={`step ${i === step ? "active" : i < step ? "done" : ""}`} key={x}>
+          <span>{i + 1}</span>{x}
         </div>
       )}
     </div>
 
     <main>
-      {step===0 && <>
+      {step === 0 && <>
         <p className="eyebrow">TRUSTED TASK COMPLETION</p>
-        <h1>Say what you need.<br/>We prove what happened.</h1>
-        <p className="lede">Future Call AI turns a phone task into a controlled goal, protects your permissions, and only marks success when the evidence supports it.</p>
+        <h1>Say what you need.<br />We prove what happened.</h1>
+        <p className="lede">
+          Future Call AI turns a phone task into a controlled goal, protects your permissions,
+          and only marks success when the evidence supports it.
+        </p>
         <label>Your request</label>
-        <textarea defaultValue="Move my appointment to Friday afternoon, but only if there is no additional charge."/>
-        <button onClick={()=>setStep(1)}>Compile Goal Contract <ChevronRight size={18}/></button>
+        <textarea value={request} onChange={e => setRequest(e.target.value)} />
+        <button onClick={() => setStep(1)}>Compile Goal Contract <ChevronRight size={18} /></button>
       </>}
 
-      {step===1 && <>
+      {step === 1 && <>
         <p className="eyebrow">GOAL CONTRACT</p>
         <h2>Review what success means</h2>
         <div className="grid">
-          <Card title="Goal" value="Reschedule appointment"/>
-          <Card title="Preferred outcome" value="Friday afternoon"/>
-          <Card title="Hard constraint" value="No additional charge"/>
-          <Card title="Permitted data" value="Name · Booking reference"/>
-          <Card title="Forbidden" value="Payment details · Paid alternative"/>
-          <Card title="Success conditions" value="A. Friday afternoon confirmed · B. No additional charge confirmed"/>
+          <Card title="Goal" value="Reschedule appointment" />
+          <Card title="Preferred outcome" value="Friday afternoon" />
+          <Card title="Hard constraint" value="No additional charge" />
+          <Card title="Permitted data" value="Name · Booking reference" />
+          <Card title="Forbidden" value="Payment details · Paid alternative" />
+          <Card title="Success conditions" value="A. Friday afternoon · B. No additional charge" />
         </div>
-        <button onClick={()=>setStep(2)}>Continue to Guardian <ChevronRight size={18}/></button>
+        <button onClick={() => setStep(2)}>Continue to Guardian <ChevronRight size={18} /></button>
       </>}
 
-      {step===2 && <>
+      {step === 2 && <>
         <p className="eyebrow">GUARDIAN</p>
         <h2>You stay in control</h2>
         <div className="guardian">
-          <ShieldCheck size={30}/>
-          <div><b>Recipient:</b> Test Clinic<br/><b>Purpose:</b> Reschedule appointment<br/><b>May share:</b> Name + booking reference<br/><b>Must not share:</b> Payment details<br/><b>Hard constraint:</b> No additional charge</div>
+          <ShieldCheck size={30} />
+          <div>
+            <b>Purpose:</b> Reschedule appointment<br />
+            <b>May share:</b> Name + booking reference<br />
+            <b>Must not share:</b> Payment details<br />
+            <b>Hard constraint:</b> No additional charge
+          </div>
         </div>
-        <label className="toggle"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/> I explicitly authorize this task.</label>
+
+        <label className="toggle">
+          <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />
+          I explicitly authorize this task under the exact Goal Contract.
+        </label>
+
         <label>Execution mode</label>
-        <select value={scenario} onChange={e=>setScenario(e.target.value)}>
-          {Object.entries(scenarios).map(([k,v])=><option value={k} key={k}>{v.label}</option>)}
-        </select>
-        <div className="notice">SIMULATED — live Twilio is not configured in this package.</div>
-        <button disabled={!consent} onClick={()=>setStep(3)}>Authorize simulated call <PhoneCall size={18}/></button>
+        <div className="mode-row">
+          <button className={mode === "simulated" ? "mode active-mode" : "mode"} onClick={() => setMode("simulated")}>
+            Simulated
+          </button>
+          <button className={mode === "live" ? "mode active-mode" : "mode"} onClick={() => setMode("live")}>
+            Real CALL-E
+          </button>
+        </div>
+
+        {mode === "simulated" ? <>
+          <label>Simulated scenario</label>
+          <select value={scenario} onChange={e => setScenario(e.target.value)}>
+            {Object.entries(simulationScenarios).map(([k, v]) => <option value={k} key={k}>{v.label}</option>)}
+          </select>
+          <div className="notice">SIMULATED — no real phone call is placed.</div>
+        </> : <>
+          <label>Destination phone</label>
+          <input className="text-input" value={phone} onChange={e => setPhone(e.target.value)}
+                 placeholder="+447700900123" inputMode="tel" />
+          <div className="notice">
+            LIVE CALL-E — this can place a real phone call. Server status: {calle.configured ? "READY" : "NOT CONFIGURED"}.
+          </div>
+        </>}
+
+        {error && <div className="error">{error}</div>}
+        <button disabled={!consent || busy} onClick={authorizeAndRun}>
+          {busy ? "Calling…" : mode === "live" ? "Authorize real CALL-E call" : "Authorize simulated call"}
+          <PhoneCall size={18} />
+        </button>
       </>}
 
-      {step===3 && <>
+      {step === 3 && <>
         <p className="eyebrow">CALL</p>
         <h2>Simulation complete</h2>
         <div className="timeline">
           <div>CREATED</div><div>ANSWERED</div><div>COMPLETED</div>
         </div>
-        <p className="notice">Provider status is transport-only. It does not determine goal success.</p>
-        <button onClick={()=>setStep(4)}>Check evidence <FileCheck2 size={18}/></button>
+        <p className="notice">
+          Provider status is transport-only. It does not determine goal success.
+        </p>
+        <button onClick={() => setStep(4)}>Check evidence <FileCheck2 size={18} /></button>
       </>}
 
-      {step===4 && <>
+      {step === 4 && <>
         <p className="eyebrow">EVIDENCE & VERIFY</p>
         <h2>What actually happened?</h2>
         <div className={`verdict ${stateClass}`}>
-          {s.result==="VERIFIED SUCCESS"?<CheckCircle2/>:s.result==="FAILED"?<XCircle/>:<HelpCircle/>}
-          <strong>{s.result}</strong>
-          <Badge>SIMULATED</Badge>
+          {displayedResult.result === "VERIFIED_SUCCESS" ? <CheckCircle2 /> :
+           displayedResult.result === "FAILED" ? <XCircle /> : <HelpCircle />}
+          <strong>{displayedResult.result}</strong>
+          <Badge>{mode === "live" ? "LIVE CALL-E" : "SIMULATED"}</Badge>
         </div>
-        {s.evidence.map(([title,ev],i)=>
+
+        {displayedResult.evidence.map(([title, ev], i) =>
           <div className="evidence" key={i}>
-            <div className="e-title">{ev?"✓":"?"} {title}</div>
-            <div className="quote">{ev?`“${ev}”`:"No explicit supporting evidence found."}</div>
+            <div className="e-title">{ev ? "✓" : "?"} {title}</div>
+            <div className="quote">{ev ? `“${ev}”` : "No explicit supporting evidence found."}</div>
           </div>
         )}
-        <div className="principle">CALL COMPLETED ≠ TASK COMPLETED</div>
+
+        {mode === "live" && liveResult && <div className="provider-card">
+          <b>Provider state:</b> {String(liveResult.provider_state || "unknown")}<br />
+          <b>Provider task_completed:</b> {String(liveResult.provider_task_completed)}<br />
+          <b>Earendel goal state:</b> {liveResult.goal_state}
+        </div>}
+
+        <div className="principle">CALL COMPLETED ≠ TASK COMPLETED ≠ VERIFIED SUCCESS</div>
         <div className="rating">
           <p>How was your experience?</p>
-          {[1,2,3,4,5].map(n=><Star key={n} onClick={()=>setRating(n)} fill={n<=rating?"currentColor":"none"} />)}
+          {[1,2,3,4,5].map(n => <Star key={n} onClick={() => setRating(n)} fill={n <= rating ? "currentColor" : "none"} />)}
         </div>
-        <button className="secondary" onClick={()=>{setStep(0);setConsent(false);setRating(0)}}>Start a new request</button>
+        <button className="secondary" onClick={() => {
+          setStep(0); setConsent(false); setRating(0); setLiveResult(null); setError("");
+        }}>Start a new request</button>
       </>}
     </main>
-  </div>
+  </div>;
 }
-function Card({title,value}) { return <div className="card"><span>{title}</span><b>{value}</b></div> }
-createRoot(document.getElementById("root")).render(<App/>)
+
+function evidenceText(result, key) {
+  const source = Array.isArray(result.provider_evidence) ? result.provider_evidence : [];
+  const text = source.map(x => typeof x === "string" ? x : JSON.stringify(x)).join(" | ");
+  if ((result.verified || []).includes(key)) return text || "CALL-E returned explicit supporting evidence.";
+  if ((result.contradicted || []).includes(key)) return text || "CALL-E returned explicit contradicting evidence.";
+  return null;
+}
+
+createRoot(document.getElementById("root")).render(<App />);
