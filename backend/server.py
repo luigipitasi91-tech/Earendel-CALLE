@@ -149,6 +149,14 @@ async def get_contract(cid: str):
     return await _get_or_404("contracts", cid)
 
 
+@api.get("/contracts/{cid}/pre_check")
+async def contract_pre_check(cid: str, mode: str = Query("SIMULATED")):
+    contract = await _get_or_404("contracts", cid)
+    return vengine.pre_execution_check(
+        contract, mode=mode, recipient_number=contract.get("recipient_number", "")
+    )
+
+
 @api.put("/contracts/{cid}")
 async def update_contract(cid: str, payload: dict):
     existing = await _get_or_404("contracts", cid)
@@ -290,7 +298,10 @@ async def execute_call(cid: str, payload: ExecutePayload):
         consent_revoked=False,
         provider_failed=provider_failed,
         websocket_failed=False,
+        guardian_blocks=guardian_blocks,
     )
+
+    pre_check = vengine.pre_execution_check(contract, mode="SIMULATED", recipient_number=payload.recipient_number)
 
     call_doc = {
         "id": call_id,
@@ -310,6 +321,7 @@ async def execute_call(cid: str, payload: ExecutePayload):
         "guardian_blocks": guardian_blocks,
         "websocket_failed": False,
         "consent_revoked": False,
+        "pre_execution_check": pre_check,
         "created_at": _now_iso(),
         "ended_at": _now_iso(),
     }
@@ -342,6 +354,7 @@ async def reverify_call(call_id: str):
         consent_revoked=bool(call.get("consent_revoked")),
         provider_failed=(call.get("provider_state") in ("failed", "busy", "no-answer", "canceled")),
         websocket_failed=bool(call.get("websocket_failed")),
+        guardian_blocks=call.get("guardian_blocks") or [],
     )
     await db.calls.update_one(
         {"id": call_id},
@@ -460,6 +473,7 @@ async def twilio_status(request: Request, call_id: str = Query(...)):
             consent_revoked=bool(fresh.get("consent_revoked")),
             provider_failed=(status in ("failed", "busy", "no-answer", "canceled")),
             websocket_failed=bool(fresh.get("websocket_failed")),
+            guardian_blocks=fresh.get("guardian_blocks") or [],
         )
         await db.calls.update_one(
             {"id": call_id},

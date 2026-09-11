@@ -17,10 +17,15 @@ PARTIAL = "PARTIAL"
 UNKNOWN = "UNKNOWN"
 FAILED = "FAILED"
 
-# Per-condition states
-CONFIRMED = "CONFIRMED"
-CONTRADICTED = "CONTRADICTED"
-UNVERIFIED = "UNVERIFIED"
+# Per-condition classification (evidence-first).
+SUPPORTING = "SUPPORTING"
+CONTRADICTING = "CONTRADICTING"
+NEUTRAL_OR_INSUFFICIENT = "NEUTRAL_OR_INSUFFICIENT"
+
+# Backwards-compat aliases (old names used by earlier tests / callers).
+CONFIRMED = SUPPORTING
+CONTRADICTED = CONTRADICTING
+UNVERIFIED = NEUTRAL_OR_INSUFFICIENT
 
 
 AFFIRM_PATTERNS = [
@@ -166,11 +171,11 @@ def evaluate_condition(condition: dict, transcript: list[dict]) -> dict:
 
     # Contradiction takes precedence.
     if contradicting_evidence:
-        state = CONTRADICTED
+        state = CONTRADICTING
     elif matched_evidence:
-        state = CONFIRMED
+        state = SUPPORTING
     else:
-        state = UNVERIFIED
+        state = NEUTRAL_OR_INSUFFICIENT
 
     return {
         "condition_id": condition["id"],
@@ -191,6 +196,104 @@ def is_voicemail(transcript: list[dict]) -> bool:
     return any(m in text_blob for m in VOICEMAIL_MARKERS)
 
 
+def attempt_refutation(
+    *,
+    contract: dict,
+    transcript: list[dict],
+    per_condition: list[dict],
+    provider_state: str,
+    consent_revoked: bool,
+    provider_failed: bool,
+    websocket_failed: bool,
+    guardian_blocks: list[dict] | None = None,
+) -> list[dict]:
+    """
+    Refutation-first pass. Try to falsify VERIFIED_SUCCESS. Returns a list of
+    checks; each has {check, passed, detail}. `passed=True` means the check
+    could NOT falsify success. If any `passed=False`, VERIFIED_SUCCESS must be
+    withheld.
+    """
+    guardian_blocks = guardian_blocks or []
+    checks: list[dict] = []
+
+    # 1. Any hard-constraint contradiction?
+    contradicted = [r for r in per_condition if r["state"] == CONTRADICTING]
+    checks.append({
+        "check": "no_condition_contradicted",
+        "passed": not contradicted,
+        "detail": (
+            f"{len(contradicted)} condition(s) explicitly contradicted by recipient."
+            if contradicted else "No explicit contradiction detected."
+        ),
+    })
+
+    # 2. Any unsupported (NEUTRAL_OR_INSUFFICIENT) condition?
+    unsupported = [r for r in per_condition if r["state"] == NEUTRAL_OR_INSUFFICIENT]
+    checks.append({
+        "check": "all_conditions_supported",
+        "passed": not unsupported and bool(per_condition),
+        "detail": (
+            f"{len(unsupported)} condition(s) lack explicit supporting evidence."
+            if unsupported else "All conditions have explicit supporting evidence."
+        ) if per_condition else "Contract has no success conditions.",
+    })
+
+    # 3. Evidence must be recipient/system, never agent-only.
+    agent_only = any(
+        any(e["turn"].get("role") == "agent" for e in r.get("supporting_evidence", []))
+        for r in per_condition
+    )
+    checks.append({
+        "check": "evidence_not_agent_only",
+        "passed": not agent_only,
+        "detail": "Supporting evidence found on agent turns — invalid." if agent_only else "All supporting evidence comes from recipient/system.",
+    })
+
+    # 4. Guardian block that materially prevents completion.
+    material_block = bool(guardian_blocks) and bool(unsupported)
+    checks.append({
+        "check": "no_material_guardian_block",
+        "passed": not material_block,
+        "detail": (
+            "Guardian blocked an item AND at least one success condition remains unsupported."
+            if material_block else
+            f"Guardian blocks: {len(guardian_blocks)}. None prevented required evidence."
+        ),
+    })
+
+    # 5. Provider-vs-task confusion: provider completed but no supporting evidence.
+    provider_confusion = (
+        provider_state == "completed" and not any(r["state"] == SUPPORTING for r in per_condition)
+    )
+    checks.append({
+        "check": "provider_completion_not_task_completion",
+        "passed": not provider_confusion,
+        "detail": (
+            "Provider reported 'completed' but no success condition has supporting evidence."
+            if provider_confusion else "Provider state and task evidence are consistent."
+        ),
+    })
+
+    # 6. Consent must still be active.
+    checks.append({
+        "check": "consent_still_active",
+        "passed": not consent_revoked,
+        "detail": "User consent revoked." if consent_revoked else "Consent active.",
+    })
+
+    # 7. Transport failure must not silently pass as success.
+    checks.append({
+        "check": "no_transport_failure",
+        "passed": not (provider_failed or websocket_failed),
+        "detail": (
+            f"Transport issues: provider_failed={provider_failed}, websocket_failed={websocket_failed}."
+            if (provider_failed or websocket_failed) else "No transport failure detected."
+        ),
+    })
+
+    return checks
+
+
 def verify(
     contract: dict,
     transcript: list[dict],
@@ -198,52 +301,63 @@ def verify(
     consent_revoked: bool = False,
     provider_failed: bool = False,
     websocket_failed: bool = False,
+    guardian_blocks: list[dict] | None = None,
 ) -> dict:
     """
-    Determine overall goal verdict from transcript and telephony signals.
+    Determine overall goal verdict.
 
-    Returns dict with verdict, per_condition results, and reason.
+    Runs evidence classification, then a refutation-first pass. VERIFIED_SUCCESS
+    is only returned if every refutation check passes.
     """
     conditions = contract.get("success_conditions", []) or []
     per_condition = [evaluate_condition(c, transcript) for c in conditions]
 
-    confirmed = [r for r in per_condition if r["state"] == CONFIRMED]
-    contradicted = [r for r in per_condition if r["state"] == CONTRADICTED]
-    unverified = [r for r in per_condition if r["state"] == UNVERIFIED]
+    supporting = [r for r in per_condition if r["state"] == SUPPORTING]
+    contradicting = [r for r in per_condition if r["state"] == CONTRADICTING]
+    neutral = [r for r in per_condition if r["state"] == NEUTRAL_OR_INSUFFICIENT]
 
-    # Hard failure modes: never promote to VERIFIED SUCCESS.
+    refutations = attempt_refutation(
+        contract=contract,
+        transcript=transcript,
+        per_condition=per_condition,
+        provider_state=provider_state,
+        consent_revoked=consent_revoked,
+        provider_failed=provider_failed,
+        websocket_failed=websocket_failed,
+        guardian_blocks=guardian_blocks,
+    )
+    failed_checks = [c for c in refutations if not c["passed"]]
+
+    # Terminal decision — never bypass refutations for VERIFIED_SUCCESS.
     if consent_revoked:
-        verdict = FAILED
-        reason = "User consent was revoked before all conditions were confirmed."
-    elif contradicted:
-        verdict = FAILED
-        reason = "At least one required condition was explicitly contradicted by the recipient."
-    elif provider_failed and not confirmed:
-        verdict = FAILED
-        reason = "Telephony provider reported a failure and no goal condition was confirmed."
-    elif websocket_failed and not confirmed:
-        verdict = UNKNOWN
-        reason = "Voice session (ConversationRelay) disconnected before any evidence was collected."
-    elif is_voicemail(transcript) and not confirmed:
-        verdict = UNKNOWN
-        reason = "Call appears to have reached voicemail/IVR. No human confirmation captured."
+        verdict, reason = FAILED, "User consent was revoked before all conditions were confirmed."
+    elif contradicting:
+        verdict, reason = FAILED, "At least one required condition was explicitly contradicted by the recipient."
+    elif provider_failed and not supporting:
+        verdict, reason = FAILED, "Telephony provider reported a failure and no goal condition was supported."
+    elif websocket_failed and not supporting:
+        verdict, reason = UNKNOWN, "Voice session disconnected before any evidence was collected."
+    elif is_voicemail(transcript) and not supporting:
+        verdict, reason = UNKNOWN, "Call appears to have reached voicemail/IVR. No human confirmation captured."
     elif not conditions:
-        verdict = UNKNOWN
-        reason = "Goal contract has no explicit success conditions to verify."
-    elif len(confirmed) == len(conditions):
-        verdict = VERIFIED_SUCCESS
-        reason = "Every required success condition has explicit supporting evidence."
-    elif confirmed and unverified:
+        verdict, reason = UNKNOWN, "Goal contract has no explicit success conditions to verify."
+    elif len(supporting) == len(conditions) and not failed_checks:
+        verdict, reason = VERIFIED_SUCCESS, "Every required success condition has explicit supporting evidence and all refutation checks passed."
+    elif len(supporting) == len(conditions) and failed_checks:
+        # All conditions supported, but a refutation still fires — must NOT be VERIFIED_SUCCESS.
         verdict = PARTIAL
-        reason = f"{len(confirmed)}/{len(conditions)} required conditions confirmed. Remaining conditions lack explicit evidence."
+        reason = "All conditions appear supported, but refutation failed: " + "; ".join(c["detail"] for c in failed_checks)
+    elif supporting and neutral:
+        verdict = PARTIAL
+        reason = f"{len(supporting)}/{len(conditions)} required conditions supported. Remaining conditions lack explicit evidence."
     else:
-        verdict = UNKNOWN
-        reason = "Call ended without explicit evidence for the required conditions."
+        verdict, reason = UNKNOWN, "Call ended without explicit evidence for the required conditions."
 
     return {
         "verdict": verdict,
         "reason": reason,
         "per_condition": per_condition,
+        "refutations": refutations,
         "provider_state": provider_state,
         "telephony_completed": provider_state == "completed",
     }
@@ -270,3 +384,44 @@ def recipient_wants_forbidden(
     if re.search(r"\b(credit card|card number|cvv|expiry|expiration|billing details|payment details)\b", low):
         return "payment details"
     return None
+
+
+def pre_execution_check(contract: dict, *, mode: str, recipient_number: str = "") -> dict:
+    """
+    Enumerate KNOWN RISKS and UNKNOWNS before execution. Unknown information
+    is represented explicitly and never invented.
+    """
+    known_risks: list[str] = []
+    unknowns: list[str] = []
+
+    if not contract.get("success_conditions"):
+        known_risks.append("No explicit success conditions — verification cannot promote to VERIFIED_SUCCESS.")
+    if not contract.get("hard_constraints"):
+        unknowns.append("hard_constraints: none stated by the user.")
+    if not contract.get("forbidden_data"):
+        unknowns.append("forbidden_data: none stated by the user.")
+    if not contract.get("permitted_data"):
+        unknowns.append("permitted_data: none stated — agent will not proactively share user data.")
+    if not contract.get("preferred_outcome"):
+        unknowns.append("preferred_outcome: not stated.")
+
+    if mode.upper() == "REAL" and not recipient_number and not contract.get("recipient_number"):
+        known_risks.append("REAL mode requested but recipient_number is missing.")
+
+    if mode.upper() == "SIMULATED":
+        known_risks.append("Execution is SIMULATED — no real telephony evidence will be produced.")
+
+    return {
+        "mode": mode.upper(),
+        "known_risks": known_risks,
+        "unknowns": unknowns,
+        "contract_snapshot": {
+            "goal": contract.get("goal") or "",
+            "preferred_outcome": contract.get("preferred_outcome") or "",
+            "hard_constraints": contract.get("hard_constraints") or [],
+            "permitted_data": contract.get("permitted_data") or [],
+            "forbidden_data": contract.get("forbidden_data") or [],
+            "forbidden_actions": contract.get("forbidden_actions") or [],
+            "success_conditions": contract.get("success_conditions") or [],
+        },
+    }

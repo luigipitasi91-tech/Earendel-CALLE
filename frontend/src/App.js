@@ -435,8 +435,8 @@ function ResultScreen({ call, contract, onRestart }) {
           )}
           {perCondition.map((c) => {
             const state = c.state;
-            const isConfirmed = state === "CONFIRMED";
-            const isContradicted = state === "CONTRADICTED";
+            const isConfirmed = state === "SUPPORTING" || state === "CONFIRMED";
+            const isContradicted = state === "CONTRADICTING" || state === "CONTRADICTED";
             const cls = isConfirmed
               ? "border-emerald-200 bg-emerald-50/40"
               : isContradicted
@@ -447,12 +447,17 @@ function ResultScreen({ call, contract, onRestart }) {
               : isContradicted
                 ? "bg-rose-100 text-rose-800 border-rose-300"
                 : "bg-slate-100 text-slate-700 border-slate-300";
+            const stateLabel = isConfirmed
+              ? "SUPPORTING"
+              : isContradicted
+                ? "CONTRADICTING"
+                : "NEUTRAL / INSUFFICIENT";
             return (
               <div key={c.condition_id} className={`rounded-md border p-3 ${cls}`} data-testid={`condition-${c.condition_id}`}>
                 <div className="flex items-center gap-2 mb-1">
                   <Badge variant="secondary" className="font-mono">{c.condition_id}</Badge>
                   <Badge variant="outline" className={`${stateBadge} font-mono text-[10px] uppercase tracking-wider`}>
-                    {state}
+                    {stateLabel}
                   </Badge>
                 </div>
                 <div className="text-sm text-slate-800 font-medium">{c.requirement}</div>
