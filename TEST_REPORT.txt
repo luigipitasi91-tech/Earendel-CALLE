@@ -1,6 +1,21 @@
 Earendel / Future Call AI local certification suite
 
-128 passed in 0.44s
+133 passed in 0.34s
 
-Executed before repository initialization on 2026-09-11.
-Live CALL-E/Twilio end-to-end certification remains pending and must not be represented as completed until a real call is executed and evidence captured.
+Executed on 2026-09-11 after adding the official CALL-E Python SDK adapter and deterministic adapter tests.
+
+Verified locally:
+- Guardian / consent regression suite
+- Evidence-first verifier
+- Simulation scenarios
+- Higgsfield optional adapter gating
+- CALL-E SDK create_and_wait contract via injected fake client
+- E.164 validation
+- CALL-E task_completed does not force VERIFIED_SUCCESS when a required condition is unknown
+
+NOT YET VERIFIED:
+- A real CALL-E phone call.
+- Live terminal evidence from the CALL-E service.
+- Public deployment.
+
+Do not represent the live path as certified until a real call is executed and evidence is captured.

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 import uuid
 from pydantic import BaseModel, Field
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from .models import (
     GoalContract, ConsentLedger, EvidenceItem, EvidenceClass, Requirement
 )
@@ -9,6 +9,7 @@ from .guardian import evaluate_before_call
 from .verify import verify_goal
 from .telephony import readiness, twilio_trial_capabilities
 from .higgsfield_adapter import HiggsfieldCreativeAdapter, CreativeRequest
+from .calle_adapter import readiness as calle_readiness, create_and_wait as calle_create_and_wait, evidence_from_calle
 
 app = FastAPI(title="Future Call AI", version="1.0.0")
 
@@ -38,6 +39,13 @@ class SimulateCall(BaseModel):
     transcript: str
 
 
+class LiveCalleRequest(BaseModel):
+    task_id: str
+    phone: str
+    region: str = "GB"
+    locale: str = "en-GB"
+
+
 class FeedbackRequest(BaseModel):
     task_id: str
     stars: int = Field(ge=1, le=5)
@@ -45,7 +53,6 @@ class FeedbackRequest(BaseModel):
 
 
 def _normalize_contract(raw: dict) -> GoalContract:
-    # Supports both current schema and the original V1 schema.
     if "objective" in raw:
         return GoalContract(**raw)
 
@@ -69,17 +76,11 @@ def _normalize_contract(raw: dict) -> GoalContract:
 
 
 def _classify_transcript(contract: GoalContract, transcript: str) -> list[EvidenceItem]:
-    """
-    Deterministic demo classifier for the appointment vertical slice.
-    This is deliberately conservative: absence is neutral, not contradiction.
-    """
     t = transcript.lower()
     evidence = []
-
     for req in contract.success_conditions:
         key = req.key
         desc = req.description.lower()
-
         if key in {"appointment", "date"} or "friday" in desc or "appointment" in desc:
             if any(p in t for p in [
                 "cannot move", "can't move", "friday is unavailable",
@@ -94,12 +95,9 @@ def _classify_transcript(contract: GoalContract, transcript: str) -> list[Eviden
             else:
                 cls = EvidenceClass.NEUTRAL_OR_INSUFFICIENT
             evidence.append(EvidenceItem(
-                requirement_key=key,
-                text=transcript,
-                classification=cls,
-                explicit=True
+                requirement_key=key, text=transcript,
+                classification=cls, explicit=True
             ))
-
         elif key == "fee" or "charge" in desc or "fee" in desc:
             if any(p in t for p in [
                 "£20", "$20", "£25", "$25", "additional fee",
@@ -114,15 +112,12 @@ def _classify_transcript(contract: GoalContract, transcript: str) -> list[Eviden
             else:
                 cls = EvidenceClass.NEUTRAL_OR_INSUFFICIENT
             evidence.append(EvidenceItem(
-                requirement_key=key,
-                text=transcript,
-                classification=cls,
-                explicit=True
+                requirement_key=key, text=transcript,
+                classification=cls, explicit=True
             ))
         else:
             evidence.append(EvidenceItem(
-                requirement_key=key,
-                text=transcript,
+                requirement_key=key, text=transcript,
                 classification=EvidenceClass.NEUTRAL_OR_INSUFFICIENT,
                 explicit=True
             ))
@@ -136,6 +131,7 @@ def health():
         "product": "Future Call AI",
         "epistemic_rule": "CALL_COMPLETED != TASK_COMPLETED",
         "telephony": readiness().__dict__,
+        "call_e": calle_readiness().__dict__,
     }
 
 
@@ -145,6 +141,11 @@ def telephony_readiness():
         "readiness": readiness().__dict__,
         "trial_capabilities": twilio_trial_capabilities(),
     }
+
+
+@app.get("/calle/readiness")
+def calle_provider_readiness():
+    return calle_readiness().__dict__
 
 
 @app.post("/guardian/check")
@@ -158,7 +159,6 @@ def verify(contract: GoalContract, evidence: list[EvidenceItem], call_completed:
     return verify_goal(contract, evidence, call_completed)
 
 
-# Backward-compatible V1 task flow used by existing tests and demo integrations.
 @app.post("/tasks")
 def create_task(req: CreateTask):
     task_id = str(uuid.uuid4())
@@ -185,6 +185,18 @@ def record_consent(req: ConsentRequest):
     return {"task_id": req.task_id, "approved": req.approved}
 
 
+def _ledger(consent: dict) -> ConsentLedger:
+    return ConsentLedger(
+        approved=consent["approved"],
+        revoked=False,
+        recipient=consent["recipient"],
+        purpose=consent["purpose"],
+        allowed_data=consent["allowed_data"],
+        forbidden_actions=consent["forbidden_actions"],
+        hard_constraints=consent["constraints"],
+    )
+
+
 @app.post("/calls/simulate")
 def simulate_call(req: SimulateCall):
     task = TASKS.get(req.task_id)
@@ -195,16 +207,7 @@ def simulate_call(req: SimulateCall):
         raise HTTPException(403, "Explicit consent required")
 
     contract = task["contract"]
-    ledger = ConsentLedger(
-        approved=consent["approved"],
-        revoked=False,
-        recipient=consent["recipient"],
-        purpose=consent["purpose"],
-        allowed_data=consent["allowed_data"],
-        forbidden_actions=consent["forbidden_actions"],
-        hard_constraints=consent["constraints"],
-    )
-    decision = evaluate_before_call(contract, ledger)
+    decision = evaluate_before_call(contract, _ledger(consent))
     if not decision.allowed:
         raise HTTPException(403, decision.reason)
 
@@ -221,6 +224,47 @@ def simulate_call(req: SimulateCall):
     }
 
 
+@app.post("/calls/calle/live")
+def calle_live_call(req: LiveCalleRequest):
+    task = TASKS.get(req.task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    consent = CONSENTS.get(req.task_id)
+    if not consent or not consent.get("approved"):
+        raise HTTPException(403, "Explicit consent required")
+
+    contract = task["contract"]
+    decision = evaluate_before_call(contract, _ledger(consent))
+    if not decision.allowed:
+        raise HTTPException(403, decision.reason)
+    if not calle_readiness().configured:
+        raise HTTPException(503, "CALL-E is not configured")
+
+    provider = calle_create_and_wait(
+        task=task["intent"],
+        phone=req.phone,
+        requirements=contract.success_conditions,
+        metadata={"earendel_task_id": req.task_id},
+        region=req.region,
+        locale=req.locale,
+    )
+    completed = provider.get("status") == "completed"
+    evidence = evidence_from_calle(provider, contract.success_conditions)
+    result = verify_goal(contract, evidence, call_completed=completed)
+    return {
+        "mode": "LIVE_CALL_E",
+        "provider_state": provider.get("status"),
+        "provider_task_completed": provider.get("task_completed"),
+        "goal_state": result.state.value,
+        "verified": result.verified,
+        "missing": result.missing,
+        "contradicted": result.contradicted,
+        "reason": result.reason,
+        "provider_evidence": provider.get("evidence", []),
+        "call_id": provider.get("id"),
+    }
+
+
 @app.post("/feedback")
 def feedback(req: FeedbackRequest):
     if req.task_id not in TASKS:
@@ -232,6 +276,7 @@ def feedback(req: FeedbackRequest):
 
 creative_adapter = HiggsfieldCreativeAdapter()
 
+
 @app.get("/creative/higgsfield/readiness")
 def higgsfield_readiness():
     return {
@@ -241,6 +286,7 @@ def higgsfield_readiness():
         "cost_preflight_required": True,
         "generation_requires_explicit_approval": True,
     }
+
 
 @app.post("/creative/higgsfield/authorize")
 def higgsfield_authorize(req: CreativeRequest):
