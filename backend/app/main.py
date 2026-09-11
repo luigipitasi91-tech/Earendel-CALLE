@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import os
 import uuid
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
@@ -12,6 +14,15 @@ from .higgsfield_adapter import HiggsfieldCreativeAdapter, CreativeRequest
 from .calle_adapter import readiness as calle_readiness, create_and_wait as calle_create_and_wait, evidence_from_calle
 
 app = FastAPI(title="Future Call AI", version="1.0.0")
+
+allowed_origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 TASKS: Dict[str, Dict[str, Any]] = {}
 CONSENTS: Dict[str, Dict[str, Any]] = {}
