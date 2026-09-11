@@ -1,10 +1,14 @@
 """
 Twilio integration boundary for Future Call AI.
 
-- Generates TwiML for <Connect><ConversationRelay>.
-- Validates X-Twilio-Signature on HTTP webhooks and the ConversationRelay
-  WebSocket handshake.
-- Reports configuration status.
+Two explicit transport modes:
+  * TWILIO_TRIAL_GATHER      — <Say>/<Gather> transport (future). Does NOT
+                               require TWILIO_CONVERSATION_RELAY_WSS_URL.
+  * TWILIO_CONVERSATION_RELAY — WebSocket transport (future/paid). Requires
+                               TWILIO_CONVERSATION_RELAY_WSS_URL.
+
+Neither transport places a real call in this build. The transport adapter
+never decides whether the user's goal succeeded — that is Verify Engine's job.
 
 If credentials are missing, all functions still WORK enough to serve as a
 boundary, but everything is flagged NOT_CONFIGURED. We never fabricate calls.
@@ -19,41 +23,76 @@ from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 
 
+# --- transport identifiers (do not confuse with goal state) ----------------
+TRANSPORT_TRIAL_GATHER = "TWILIO_TRIAL_GATHER"
+TRANSPORT_CONVERSATION_RELAY = "TWILIO_CONVERSATION_RELAY"
+
+BASE_REQUIRED = (
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_FROM_NUMBER",
+    "PUBLIC_BASE_URL",
+)
+
+
 def _cfg(key: str) -> str:
     return (os.environ.get(key) or "").strip()
 
 
-def telephony_status() -> dict:
-    account_sid = _cfg("TWILIO_ACCOUNT_SID")
-    auth_token = _cfg("TWILIO_AUTH_TOKEN")
-    from_number = _cfg("TWILIO_FROM_NUMBER")
-    public_base = _cfg("PUBLIC_BASE_URL")
-    wss_url = _cfg("TWILIO_CONVERSATION_RELAY_WSS_URL")
+def _missing_for(transport: str) -> list[str]:
+    """Return the list of required-but-empty env vars for a transport."""
+    required = list(BASE_REQUIRED)
+    if transport == TRANSPORT_CONVERSATION_RELAY:
+        required.append("TWILIO_CONVERSATION_RELAY_WSS_URL")
+    return [k for k in required if not _cfg(k)]
 
-    missing = []
-    if not account_sid:
-        missing.append("TWILIO_ACCOUNT_SID")
-    if not auth_token:
-        missing.append("TWILIO_AUTH_TOKEN")
-    if not from_number:
-        missing.append("TWILIO_FROM_NUMBER")
-    if not public_base:
-        missing.append("PUBLIC_BASE_URL")
-    if not wss_url:
-        missing.append("TWILIO_CONVERSATION_RELAY_WSS_URL")
 
+def transport_status(transport: str) -> dict:
+    """Config validity for a single transport. Never prints secrets."""
+    missing = _missing_for(transport)
     return {
-        "mode": "REAL" if not missing else "NOT_CONFIGURED",
+        "transport": transport,
+        "status": "CONFIG_VALID" if not missing else "NOT_CONFIGURED",
         "missing": missing,
-        "public_base_url": public_base or None,
-        "conversation_relay_wss_url": wss_url or None,
-        "from_number": from_number or None,
-        "signature_validation": "ENABLED" if auth_token else "NOT_CONFIGURED",
     }
 
 
-def is_configured() -> bool:
-    return telephony_status()["mode"] == "REAL"
+def telephony_status() -> dict:
+    """
+    Report configuration status for BOTH transports separately.
+
+    Overall `mode` remains for backward compatibility: REAL only when at least
+    one transport is CONFIG_VALID; otherwise NOT_CONFIGURED. No real call is
+    made in this build regardless of status.
+    """
+    trial = transport_status(TRANSPORT_TRIAL_GATHER)
+    relay = transport_status(TRANSPORT_CONVERSATION_RELAY)
+    any_valid = trial["status"] == "CONFIG_VALID" or relay["status"] == "CONFIG_VALID"
+
+    return {
+        # legacy top-level fields (kept for existing UI/test compatibility)
+        "mode": "REAL" if any_valid else "NOT_CONFIGURED",
+        "missing": _missing_for(TRANSPORT_CONVERSATION_RELAY),  # legacy default
+        "signature_validation": "ENABLED" if _cfg("TWILIO_AUTH_TOKEN") else "NOT_CONFIGURED",
+        # explicit per-transport report
+        "transports": {
+            TRANSPORT_TRIAL_GATHER: trial,
+            TRANSPORT_CONVERSATION_RELAY: relay,
+        },
+        "from_number_set": bool(_cfg("TWILIO_FROM_NUMBER")),
+        "public_base_url_set": bool(_cfg("PUBLIC_BASE_URL")),
+    }
+
+
+def is_configured(transport: str | None = None) -> bool:
+    """
+    True only if the given transport is CONFIG_VALID. When transport is None,
+    True if either transport is CONFIG_VALID.
+    """
+    if transport is None:
+        st = telephony_status()
+        return any(t["status"] == "CONFIG_VALID" for t in st["transports"].values())
+    return transport_status(transport)["status"] == "CONFIG_VALID"
 
 
 def validate_http_signature(url: str, params: dict, signature: Optional[str]) -> bool:
