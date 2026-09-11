@@ -16,6 +16,7 @@ boundary, but everything is flagged NOT_CONFIGURED. We never fabricate calls.
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 from xml.sax.saxutils import escape
 
@@ -153,6 +154,55 @@ def build_conversation_relay_twiml(
   </Connect>
 </Response>"""
     return twiml
+
+
+# ---------------------------------------------------------------------------
+# TWILIO_TRIAL_GATHER transport: <Say> + <Gather input="speech">
+# ---------------------------------------------------------------------------
+
+# E.164: leading '+', 1-3 digit country code, up to 15 total digits.
+_E164 = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def is_valid_e164(number: str) -> bool:
+    return bool(_E164.match((number or "").strip()))
+
+
+def build_trial_gather_twiml(
+    *,
+    say_text: str,
+    action_url: str,
+    hints: str = "",
+    speech_timeout: str = "auto",
+    timeout_seconds: int = 6,
+    language: str = "en-US",
+) -> str:
+    """
+    TwiML for the TRIAL_GATHER transport. Speaks `say_text` and gathers speech
+    from the recipient, POSTing the SpeechResult to `action_url`.
+
+    - method is fixed to POST (Twilio's default form-encoded webhook).
+    - No sensitive user data should be embedded in `say_text`; the caller is
+      responsible for constraining what is spoken.
+    """
+    hints_attr = f' hints="{escape(hints)}"' if hints else ""
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="{escape(language)}">{escape(say_text)}</Say>
+  <Gather input="speech" action="{escape(action_url)}" method="POST" language="{escape(language)}" speechTimeout="{escape(str(speech_timeout))}" timeout="{int(timeout_seconds)}"{hints_attr}/>
+  <Say voice="Polly.Joanna" language="{escape(language)}">We did not receive a response. Ending the call.</Say>
+  <Hangup/>
+</Response>"""
+    return twiml
+
+
+def build_trial_gather_ack_twiml(*, say_text: str) -> str:
+    """TwiML used to end the call politely after evidence has been gathered."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">{escape(say_text)}</Say>
+  <Hangup/>
+</Response>"""
 
 
 def start_outbound_call(

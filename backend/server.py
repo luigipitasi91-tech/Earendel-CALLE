@@ -104,6 +104,7 @@ class ExecutePayload(BaseModel):
     mode: str = "SIMULATED"          # "SIMULATED" or "REAL"
     scenario: str = "cooperative"    # only used for SIMULATED
     recipient_number: str = ""       # required for REAL
+    transport: str = "TWILIO_TRIAL_GATHER"  # or "TWILIO_CONVERSATION_RELAY"
 
 
 # ---------------------------------------------------------------------------
@@ -228,19 +229,38 @@ async def execute_call(cid: str, payload: ExecutePayload):
     call_id = _uid()
 
     if payload.mode.upper() == "REAL":
-        if tel["mode"] != "REAL":
+        # Choose transport (default: TRIAL_GATHER).
+        transport = (payload.transport or "TWILIO_TRIAL_GATHER").upper()
+        if transport not in (
+            twilio_service.TRANSPORT_TRIAL_GATHER,
+            twilio_service.TRANSPORT_CONVERSATION_RELAY,
+        ):
+            raise HTTPException(400, f"Unknown transport: {transport}")
+
+        t_status = twilio_service.transport_status(transport)
+        if t_status["status"] != "CONFIG_VALID":
             raise HTTPException(
                 400,
-                f"Twilio is NOT_CONFIGURED. Missing: {', '.join(tel['missing'])}. "
+                f"{transport} is NOT_CONFIGURED. Missing: {', '.join(t_status['missing'])}. "
                 f"Cannot execute a REAL call.",
             )
+
         recipient = (payload.recipient_number or contract.get("recipient_number") or "").strip()
         if not recipient:
             raise HTTPException(400, "recipient_number is required for a REAL call.")
-        # Kick off actual Twilio call
+        if not twilio_service.is_valid_e164(recipient):
+            raise HTTPException(
+                400,
+                "recipient_number must be a valid E.164 phone number (e.g. +14155552671).",
+            )
+
         public_base = os.environ["PUBLIC_BASE_URL"].rstrip("/")
-        twiml_url = f"{public_base}/api/twilio/voice?call_id={call_id}"
         status_cb = f"{public_base}/api/twilio/status?call_id={call_id}"
+        if transport == twilio_service.TRANSPORT_TRIAL_GATHER:
+            twiml_url = f"{public_base}/api/twilio/trial_gather/voice?call_id={call_id}"
+        else:
+            twiml_url = f"{public_base}/api/twilio/voice?call_id={call_id}"
+
         try:
             started = twilio_service.start_outbound_call(
                 to_number=recipient,
@@ -253,6 +273,7 @@ async def execute_call(cid: str, payload: ExecutePayload):
             "id": call_id,
             "contract_id": cid,
             "mode": "REAL",
+            "transport": transport,
             "recipient_number": recipient,
             "twilio_call_sid": started["call_sid"],
             "provider_state": started["status"],
@@ -413,6 +434,168 @@ async def twilio_voice(request: Request, call_id: str = Query(...)):
         status_callback_url=status_url,
     )
     return Response(content=twiml, media_type="application/xml")
+
+
+# --- TWILIO_TRIAL_GATHER transport --------------------------------------
+
+def _trial_gather_prompt(contract: dict) -> str:
+    """
+    Build the recipient-facing prompt. Contains ONLY information the user
+    has permitted (goal, permitted_data). Forbidden data is never spoken.
+    """
+    goal = (contract.get("goal") or "regarding a scheduled matter").strip().rstrip(".")
+    permitted = contract.get("permitted_data") or []
+    parts = [f"Hello. This is an authorized assistant calling {goal}."]
+    if permitted:
+        parts.append("For your records I may reference: " + ", ".join(permitted) + ".")
+    parts.append(
+        "Could you please confirm the outcome after the tone? "
+        "Please speak clearly after the beep."
+    )
+    return " ".join(parts)
+
+
+@api.post("/twilio/trial_gather/voice")
+async def twilio_trial_gather_voice(request: Request, call_id: str = Query(...)):
+    """
+    TwiML entry point for the TWILIO_TRIAL_GATHER transport. Returns
+    <Say> + <Gather input="speech"> pointing at /twilio/trial_gather/speech.
+    """
+    form = dict((await request.form()).items()) if request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded") else {}
+    sig = request.headers.get("X-Twilio-Signature")
+    url = _rebuild_url(request)
+
+    if twilio_service.is_configured(twilio_service.TRANSPORT_TRIAL_GATHER):
+        if not twilio_service.validate_http_signature(url, form, sig):
+            raise HTTPException(403, "Invalid Twilio signature")
+
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        raise HTTPException(404, "call not found")
+    contract = await db.contracts.find_one({"id": call["contract_id"]}, {"_id": 0}) or {}
+
+    if contract.get("consent_revoked") or not contract.get("consent_granted"):
+        twiml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>"
+        return Response(content=twiml, media_type="application/xml")
+
+    public_base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    action_url = f"{public_base}/api/twilio/trial_gather/speech?call_id={call_id}&gather_seq=1"
+    say_text = _trial_gather_prompt(contract)
+
+    twiml = twilio_service.build_trial_gather_twiml(
+        say_text=say_text,
+        action_url=action_url,
+    )
+    return Response(content=twiml, media_type="application/xml")
+
+
+@api.post("/twilio/trial_gather/speech")
+async def twilio_trial_gather_speech(
+    request: Request,
+    call_id: str = Query(...),
+    gather_seq: int = Query(1),
+):
+    """
+    Twilio <Gather> action callback. Idempotent by (CallSid, gather_seq).
+    Normalizes SpeechResult into a recipient transcript turn with explicit
+    provenance (source=twilio, transport=TWILIO_TRIAL_GATHER). Returns
+    follow-up TwiML that ends the call politely.
+    """
+    form = dict((await request.form()).items())
+    sig = request.headers.get("X-Twilio-Signature")
+    url = _rebuild_url(request)
+
+    if twilio_service.is_configured(twilio_service.TRANSPORT_TRIAL_GATHER):
+        if not twilio_service.validate_http_signature(url, form, sig):
+            raise HTTPException(403, "Invalid Twilio signature")
+
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        raise HTTPException(404, "call not found")
+
+    call_sid = form.get("CallSid") or ""
+    event_key = f"{call_sid}:gather:{int(gather_seq)}"
+
+    # Idempotency: dedupe duplicate/replayed webhook deliveries.
+    if event_key in (call.get("seen_events") or []):
+        # Return a benign hangup TwiML — evidence already recorded.
+        return Response(
+            content=twilio_service.build_trial_gather_ack_twiml(
+                say_text="Thank you. Goodbye."
+            ),
+            media_type="application/xml",
+        )
+
+    speech = (form.get("SpeechResult") or "").strip()
+    confidence_raw = form.get("Confidence")
+    try:
+        confidence = float(confidence_raw) if confidence_raw is not None else None
+    except ValueError:
+        confidence = None
+
+    updates: dict[str, Any] = {
+        "$push": {
+            "seen_events": event_key,
+            "provider_events": {
+                "event": "gather",
+                "seq": int(gather_seq),
+                "at": _now_iso(),
+                "call_sid": call_sid,
+                "had_speech": bool(speech),
+            },
+        }
+    }
+
+    if speech:
+        turn = {
+            "seq": int(gather_seq),
+            "role": "recipient",
+            "text": speech,
+            "at": _now_iso(),
+            "mode": "REAL",
+            "provenance": {
+                "source": "twilio",
+                "transport": twilio_service.TRANSPORT_TRIAL_GATHER,
+                "call_sid": call_sid,
+                "gather_seq": int(gather_seq),
+                "confidence": confidence,
+            },
+        }
+        updates["$push"]["transcript"] = turn
+
+    await db.calls.update_one({"id": call_id}, updates)
+
+    # Re-run verification with the updated evidence, but NEVER treat provider
+    # completion as goal success. Empty speech leaves the goal state UNKNOWN.
+    fresh = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    contract = await db.contracts.find_one({"id": fresh["contract_id"]}, {"_id": 0}) or {}
+    verdict = vengine.verify(
+        contract=contract,
+        transcript=fresh.get("transcript", []),
+        provider_state=fresh.get("provider_state") or "in-progress",
+        consent_revoked=bool(fresh.get("consent_revoked")),
+        provider_failed=False,
+        websocket_failed=False,
+        guardian_blocks=fresh.get("guardian_blocks") or [],
+    )
+    await db.calls.update_one(
+        {"id": call_id},
+        {"$set": {
+            "verdict": verdict,
+            "goal_state": verdict["verdict"],
+            "verdict_reason": verdict["reason"],
+        }},
+    )
+
+    ack = (
+        "Thank you. We have recorded your response. Goodbye."
+        if speech else
+        "We did not receive a response. Ending the call."
+    )
+    return Response(
+        content=twilio_service.build_trial_gather_ack_twiml(say_text=ack),
+        media_type="application/xml",
+    )
 
 
 @api.post("/twilio/status")
