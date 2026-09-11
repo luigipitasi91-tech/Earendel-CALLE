@@ -30,10 +30,13 @@ A telephony provider reporting `completed` is not enough. The system only marks 
 
 ## Current status
 
-- Local verification/regression suite included.
-- Simulated scenarios are explicitly labeled `SIMULATED`.
-- Higgsfield adapter is optional and cost-gated.
-- Live CALL-E/Twilio certification must be completed with real credentials before claiming a live end-to-end success.
+- **133/133 local backend certification tests pass.**
+- Official CALL-E Python SDK integration is present server-side via `calle-ai==0.7.0`.
+- Live runtime uses `CalleClient.calls.create_and_wait(...)` behind Guardian + explicit consent.
+- CALL-E terminal structured results are mapped into SUPPORTING / CONTRADICTING / NEUTRAL_OR_INSUFFICIENT evidence before Earendel Verify runs.
+- Simulated scenarios are explicitly labeled `SIMULATED`; the UI now separates Simulated and Real CALL-E execution modes.
+- Higgsfield remains optional, cost-gated, and outside the Guardian/Verify trust boundary.
+- **A real CALL-E phone call and public deployment are still pending; no live end-to-end success is claimed yet.**
 
 ## Repository layout
 
@@ -48,8 +51,26 @@ A telephony provider reporting `completed` is not enough. The system only marks 
 
 ```bash
 cd backend
-python -m pytest -q
+PYTHONPATH=. pytest -q
 ```
+
+Latest local result: **133 passed in 0.34s**. See `TEST_REPORT.txt`.
+
+## CALL-E configuration
+
+Set the API key only on the backend/server:
+
+```bash
+export CALLE_API_KEY="..."
+```
+
+Optional:
+
+```bash
+export CALLE_BASE_URL="https://api.heycall-e.com"
+```
+
+The browser never receives the CALL-E API key. The live UI calls the backend endpoint `POST /calls/calle/live`.
 
 ## Submission discipline
 
