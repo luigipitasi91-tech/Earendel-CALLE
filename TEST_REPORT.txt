@@ -1,0 +1,6 @@
+Earendel / Future Call AI local certification suite
+
+128 passed in 0.44s
+
+Executed before repository initialization on 2026-09-11.
+Live CALL-E/Twilio end-to-end certification remains pending and must not be represented as completed until a real call is executed and evidence captured.
