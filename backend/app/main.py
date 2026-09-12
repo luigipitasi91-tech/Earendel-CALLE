@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uuid
@@ -15,7 +15,7 @@ from .calle_adapter import readiness as calle_readiness, create_and_wait as call
 app = FastAPI(title="Future Call AI", version="1.0.0")
 allowed_origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://future-call-ai.onrender.com").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
-TASKS: Dict[str, Dict[str, Any]] = {}; CONSENTS: Dict[str, Dict[str, Any]] = {}; FEEDBACK: list[Dict[str, Any]] = []
+TASKS: Dict[str, Dict[str, Any]] = {}; CONSENTS: Dict[str, Dict[str, Any]] = {}; FEEDBACK: list[Dict[str, Any]] = []; CALL_JOBS: Dict[str, Dict[str, Any]] = {}
 
 class CreateTask(BaseModel): intent: str; recipient: str; contract: dict
 class ConsentRequest(BaseModel):
@@ -95,6 +95,35 @@ def calle_live_call(req:LiveCalleRequest):
     evidence.extend(audit.evidence)
     result=verify_goal(contract,evidence,call_completed=completed)
     return {"mode":"LIVE_CALL_E","guardian":"BLOCKED" if audit.blocked else "ENFORCED","guardian_reasons":audit.reasons,"provider_state":provider.get("status"),"provider_task_completed":provider.get("task_completed"),"goal_state":result.state.value,"verified":result.verified,"missing":result.missing,"contradicted":result.contradicted,"reason":result.reason,"provider_evidence":provider.get("evidence",[]),"call_id":provider.get("id")}
+
+def _run_calle_job(job_id: str, req: LiveCalleRequest):
+    try:
+        CALL_JOBS[job_id] = {"status":"RUNNING"}
+        result = calle_live_call(req)
+        CALL_JOBS[job_id] = {"status":"COMPLETED","result":result}
+    except HTTPException as exc:
+        CALL_JOBS[job_id] = {"status":"FAILED","error":str(exc.detail),"http_status":exc.status_code}
+    except Exception as exc:
+        CALL_JOBS[job_id] = {"status":"FAILED","error":f"CALL-E runtime error: {type(exc).__name__}"}
+
+@app.post("/calls/calle/start")
+def calle_start(req: LiveCalleRequest, background_tasks: BackgroundTasks):
+    task=TASKS.get(req.task_id)
+    if not task: raise HTTPException(404,"Task not found")
+    consent=CONSENTS.get(req.task_id)
+    if not consent or not consent.get("approved"): raise HTTPException(403,"Explicit consent required")
+    decision=evaluate_before_call(task["contract"],_ledger(consent))
+    if not decision.allowed: raise HTTPException(403,decision.reason)
+    if not calle_readiness().configured: raise HTTPException(503,"CALL-E is not configured")
+    job_id=str(uuid.uuid4()); CALL_JOBS[job_id]={"status":"QUEUED"}
+    background_tasks.add_task(_run_calle_job,job_id,req)
+    return {"job_id":job_id,"status":"QUEUED"}
+
+@app.get("/calls/calle/status/{job_id}")
+def calle_job_status(job_id: str):
+    job=CALL_JOBS.get(job_id)
+    if not job: raise HTTPException(404,"Call job not found")
+    return job
 
 @app.post("/feedback")
 def feedback(req:FeedbackRequest):
