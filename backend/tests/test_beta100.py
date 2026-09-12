@@ -29,8 +29,10 @@ for i in range(15):
     cases.append(("failed", [e("date", EvidenceClass.SUPPORTING), e("fee", EvidenceClass.CONTRADICTING)], True, GoalState.FAILED))
 for i in range(10):
     cases.append(("neutral", [e("date", EvidenceClass.NEUTRAL_OR_INSUFFICIENT), e("fee", EvidenceClass.NEUTRAL_OR_INSUFFICIENT)], True, GoalState.UNKNOWN))
+# Interrupted transport preserves explicit evidence but can never promote to VERIFIED_SUCCESS.
+# With all conditions explicitly supported, the safe state is PARTIAL until transport completion is established.
 for i in range(10):
-    cases.append(("dropped", [e("date", EvidenceClass.SUPPORTING), e("fee", EvidenceClass.SUPPORTING)], False, GoalState.UNKNOWN))
+    cases.append(("dropped", [e("date", EvidenceClass.SUPPORTING), e("fee", EvidenceClass.SUPPORTING)], False, GoalState.PARTIAL))
 
 assert len(cases) == 100
 
