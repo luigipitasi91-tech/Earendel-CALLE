@@ -55,9 +55,26 @@ def test_without_hold_not_fee_proof():
 def test_completed_transport_without_evidence_never_verified():
     assert verify_goal(contract(), [], True).state != GoalState.VERIFIED_SUCCESS
 
-def test_incomplete_transport_never_verified_even_with_evidence():
+def test_incomplete_transport_never_verified_even_with_all_evidence():
     r = verify_goal(contract(), [e("date", EvidenceClass.SUPPORTING), e("fee", EvidenceClass.SUPPORTING)], False)
+    assert r.state == GoalState.PARTIAL
+    assert set(r.verified) == {"date", "fee"}
+    assert "transport incomplete" in r.refutation_notes
+
+def test_incomplete_transport_preserves_partial_evidence():
+    r = verify_goal(contract(), [e("date", EvidenceClass.SUPPORTING)], False)
+    assert r.state == GoalState.PARTIAL
+    assert r.verified == ["date"]
+    assert "fee" in r.missing
+
+def test_incomplete_transport_with_no_evidence_is_unknown():
+    r = verify_goal(contract(), [], False)
     assert r.state == GoalState.UNKNOWN
+
+def test_explicit_contradiction_survives_transport_failure():
+    r = verify_goal(contract(), [e("fee", EvidenceClass.CONTRADICTING, "There will be a £20 fee")], False)
+    assert r.state == GoalState.FAILED
+    assert "fee" in r.contradicted
 
 def test_guardian_no_consent():
     assert not evaluate_before_call(contract(), consent(False)).allowed
