@@ -14,23 +14,18 @@ def attempt_refutation(contract: GoalContract, evidence: list[EvidenceItem]) -> 
 
 
 def verify_goal(contract: GoalContract, evidence: list[EvidenceItem], call_completed: bool) -> VerificationResult:
-    required = [r.key for r in contract.success_conditions if r.required]
-    if not call_completed:
-        return VerificationResult(
-            state=GoalState.UNKNOWN,
-            verified=[],
-            missing=required,
-            contradicted=[],
-            refutation_notes=["transport incomplete"],
-            reason="The call did not complete; goal success cannot be established."
-        )
+    """Verify the user goal from explicit evidence, never from provider completion alone.
 
+    Evidence is evaluated before transport state. This preserves useful evidence from
+    interrupted calls while keeping the fail-closed rule: an incomplete transport can
+    never produce VERIFIED_SUCCESS.
+    """
+    required = [r.key for r in contract.success_conditions if r.required]
     by_key = defaultdict(list)
     for item in evidence:
         by_key[item.requirement_key].append(item)
 
     verified, missing, contradicted = [], [], []
-
     for req in contract.success_conditions:
         items = by_key.get(req.key, [])
         has_contradiction = any(
@@ -39,6 +34,8 @@ def verify_goal(contract: GoalContract, evidence: list[EvidenceItem], call_compl
         has_support = any(
             i.explicit and i.classification == EvidenceClass.SUPPORTING for i in items
         )
+        # Refutation wins over support until a future chronology-aware resolver proves
+        # that a contradiction was explicitly retracted.
         if has_contradiction:
             contradicted.append(req.key)
         elif has_support:
@@ -56,6 +53,27 @@ def verify_goal(contract: GoalContract, evidence: list[EvidenceItem], call_compl
             contradicted=contradicted,
             refutation_notes=refutation_notes,
             reason="At least one required success condition is explicitly contradicted."
+        )
+
+    # Transport completion is required to promote the goal to VERIFIED_SUCCESS, but
+    # evidence collected before an interruption is not discarded.
+    if not call_completed:
+        if verified:
+            return VerificationResult(
+                state=GoalState.PARTIAL,
+                verified=verified,
+                missing=missing,
+                contradicted=[],
+                refutation_notes=["transport incomplete", *refutation_notes],
+                reason="The call did not complete. Explicit evidence was preserved, but goal success cannot be fully established."
+            )
+        return VerificationResult(
+            state=GoalState.UNKNOWN,
+            verified=[],
+            missing=missing or required,
+            contradicted=[],
+            refutation_notes=["transport incomplete", *refutation_notes],
+            reason="The call did not complete and no required condition has explicit supporting evidence."
         )
 
     if required and not missing and set(required).issubset(set(verified)):
