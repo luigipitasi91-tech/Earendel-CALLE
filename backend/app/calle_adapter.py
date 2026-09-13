@@ -1,6 +1,8 @@
 import hashlib
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
@@ -15,6 +17,12 @@ WEEKDAYS = {
     "saturday": 5,
     "sunday": 6,
 }
+
+_CALL_DEDUPE_LOCK = threading.Lock()
+_CALL_DEDUPE_INFLIGHT: dict[str, threading.Event] = {}
+_CALL_DEDUPE_RECENT: dict[str, dict] = {}
+_CALL_DEDUPE_TTL_SECONDS = int(os.getenv("CALL_DEDUPE_TTL_SECONDS", "900"))
+_CALL_DEDUPE_WAIT_SECONDS = int(os.getenv("CALL_DEDUPE_WAIT_SECONDS", "600"))
 
 @dataclass
 class CalleReadiness:
@@ -135,6 +143,29 @@ def _stable_idempotency_key(*, phone: str, region: str, locale: str, provider_ta
     return f"earendel-{hashlib.sha256(material).hexdigest()[:40]}"
 
 
+def _prune_recent_calls(now: float) -> None:
+    stale = [
+        key for key, entry in _CALL_DEDUPE_RECENT.items()
+        if now - float(entry.get("created_at", 0)) > _CALL_DEDUPE_TTL_SECONDS
+    ]
+    for key in stale:
+        _CALL_DEDUPE_RECENT.pop(key, None)
+
+
+def _recent_call_result(idempotency_key: str):
+    with _CALL_DEDUPE_LOCK:
+        _prune_recent_calls(time.time())
+        entry = _CALL_DEDUPE_RECENT.get(idempotency_key)
+        if not entry:
+            return None
+        if entry.get("error"):
+            raise RuntimeError(
+                "Identical live call suppressed because the same provider request recently ended with an ambiguous or failed outcome. "
+                "Wait for the duplicate-suppression window before retrying."
+            )
+        return entry.get("result")
+
+
 def create_and_wait(*, task: str, phone: str, requirements, metadata: dict | None = None,
                     region: str, locale: str, client_factory=None,
                     contract=None, consent=None) -> dict:
@@ -150,13 +181,50 @@ def create_and_wait(*, task: str, phone: str, requirements, metadata: dict | Non
         locale=locale,
         provider_task=provider_task,
     )
-    return client.calls.create_and_wait(
-        task=provider_task,
-        recipients=[{"phones": [phone], "region": region, "locale": locale}],
-        result_schema=build_result_schema(requirements),
-        metadata=metadata or {},
-        idempotency_key=idempotency_key,
-    )
+
+    cached = _recent_call_result(idempotency_key)
+    if cached is not None:
+        return cached
+
+    with _CALL_DEDUPE_LOCK:
+        _prune_recent_calls(time.time())
+        existing_event = _CALL_DEDUPE_INFLIGHT.get(idempotency_key)
+        if existing_event is None:
+            event = threading.Event()
+            _CALL_DEDUPE_INFLIGHT[idempotency_key] = event
+            is_leader = True
+        else:
+            event = existing_event
+            is_leader = False
+
+    if not is_leader:
+        if not event.wait(timeout=_CALL_DEDUPE_WAIT_SECONDS):
+            raise RuntimeError("Identical live call is already in progress; duplicate provider execution was suppressed.")
+        cached = _recent_call_result(idempotency_key)
+        if cached is None:
+            raise RuntimeError("Identical live call was suppressed after the original execution ended without a reusable result.")
+        return cached
+
+    try:
+        result = client.calls.create_and_wait(
+            task=provider_task,
+            recipients=[{"phones": [phone], "region": region, "locale": locale}],
+            result_schema=build_result_schema(requirements),
+            metadata=metadata or {},
+            idempotency_key=idempotency_key,
+        )
+        with _CALL_DEDUPE_LOCK:
+            _CALL_DEDUPE_RECENT[idempotency_key] = {"created_at": time.time(), "result": result, "error": None}
+        return result
+    except Exception as exc:
+        with _CALL_DEDUPE_LOCK:
+            _CALL_DEDUPE_RECENT[idempotency_key] = {"created_at": time.time(), "result": None, "error": str(exc)}
+        raise
+    finally:
+        with _CALL_DEDUPE_LOCK:
+            finished_event = _CALL_DEDUPE_INFLIGHT.pop(idempotency_key, None)
+            if finished_event is not None:
+                finished_event.set()
 
 
 def evidence_from_calle(call: dict, requirements):
