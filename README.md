@@ -30,13 +30,17 @@ A telephony provider reporting `completed` is not enough. The system only marks 
 
 ## Current status
 
-- **133/133 local backend certification tests pass.**
+- **150/150 backend certification tests pass.**
+- GitHub Actions certifies both the backend suite and the frontend production build.
 - Official CALL-E Python SDK integration is present server-side via `calle-ai==0.7.0`.
 - Live runtime uses `CalleClient.calls.create_and_wait(...)` behind Guardian + explicit consent.
 - CALL-E terminal structured results are mapped into SUPPORTING / CONTRADICTING / NEUTRAL_OR_INSUFFICIENT evidence before Earendel Verify runs.
 - Simulated scenarios are explicitly labeled `SIMULATED`; the UI now separates Simulated and Real CALL-E execution modes.
 - Higgsfield remains optional, cost-gated, and outside the Guardian/Verify trust boundary.
-- **A real CALL-E phone call and public deployment are still pending; no live end-to-end success is claimed yet.**
+- Public frontend: https://future-call-ai.onrender.com
+- Public backend: https://earendel-calle.onrender.com
+- Frontend → backend → CALL-E credential readiness and provider rejection diagnostics are verified in production.
+- A real successful CALL-E call is still pending; no live end-to-end success is claimed yet.
 
 ## Repository layout
 
@@ -54,7 +58,7 @@ cd backend
 PYTHONPATH=. pytest -q
 ```
 
-Latest local result: **133 passed in 0.34s**. See `TEST_REPORT.txt`.
+Latest local result: **150 passed**. The same suite is required by GitHub Actions.
 
 ## CALL-E configuration
 
@@ -70,7 +74,9 @@ Optional:
 export CALLE_BASE_URL="https://api.heycall-e.com"
 ```
 
-The browser never receives the CALL-E API key. The live UI calls the backend endpoint `POST /calls/calle/live`.
+The browser never receives the CALL-E API key. Live execution uses `POST /calls/calle/start`, then polls `GET /calls/calle/status/{job_id}` so a long provider call does not hold a browser request open.
+
+Before a job is created, the backend validates the selected route and resolves the E.164 number to its actual destination region. The known-rejected `GB/en-GB` route is blocked before CALL-E receives a request. The controlled demo currently exposes only the SDK-documented `US/en-US` route; published coverage is never presented as a runtime guarantee.
 
 ## Submission discipline
 

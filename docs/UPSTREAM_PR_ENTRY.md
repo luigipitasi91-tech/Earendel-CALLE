@@ -2,7 +2,7 @@
 
 Target repository: `CALLE-AI/awesome-phone-call-agents`
 
-Target section: **Community apps**
+Target section: **Apps**
 
 Suggested README line:
 

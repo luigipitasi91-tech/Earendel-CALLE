@@ -54,7 +54,7 @@ Expand evidence provenance and chronology-aware contradiction resolution, add mo
 
 ## Final fields to insert after external release actions
 - Public repository: https://github.com/luigipitasi91-tech/Earendel-CALLE
-- Public demo URL: PENDING DEPLOYMENT
+- Public demo URL: https://future-call-ai.onrender.com
 - Demo video URL: PENDING RECORDING
 - CALL-E awesome repository PR URL: PENDING UPSTREAM PR
-- CALL-E account email: PENDING USER CONFIRMATION
+- CALL-E account email: luigipitasi91@gmail.com (confirm before submission)

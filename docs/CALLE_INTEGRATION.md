@@ -10,17 +10,18 @@ The API key stays server-side in `CALLE_API_KEY`.
 
 ## Runtime path
 
-`POST /calls/calle/live`
+`POST /calls/calle/start` followed by `GET /calls/calle/status/{job_id}`
 
 1. Load the Earendel task and Goal Contract.
 2. Require explicit recorded user consent.
 3. Run Guardian before any external action.
-4. Validate recipient phone number as E.164.
-5. Build a strict CALL-E `result_schema` from the Goal Contract success conditions.
-6. Invoke `CalleClient.calls.create_and_wait(...)`.
-7. Map CALL-E terminal structured result into SUPPORTING / CONTRADICTING / NEUTRAL_OR_INSUFFICIENT evidence.
-8. Run Earendel Verify.
-9. Return provider state and goal state separately.
+4. Validate the route and resolve the E.164 number to its actual destination region before creating a provider job.
+5. Reject known unavailable or uncertified region/language combinations without consuming a CALL-E call.
+6. Build a strict CALL-E `result_schema` from the Goal Contract success conditions.
+7. Run `CalleClient.calls.create_and_wait(...)` in a background job while the browser polls Earendel.
+8. Map CALL-E terminal structured result into SUPPORTING / CONTRADICTING / NEUTRAL_OR_INSUFFICIENT evidence.
+9. Run Earendel Verify.
+10. Return provider state and goal state separately.
 
 ## Evidence discipline
 
@@ -30,4 +31,4 @@ Each mandatory success condition must independently survive verification. Unknow
 
 ## Live gate
 
-The integration is code-complete and locally tested with a deterministic injected client. A real live call is still required before the submission can claim end-to-end live certification.
+The integration, public deployment, credential readiness, capability gate, background polling, and provider diagnostics are verified. A real successful CALL-E call is still required before the submission can claim end-to-end live certification.

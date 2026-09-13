@@ -2,7 +2,7 @@
 
 ## Code / runtime
 - [x] CALL-E is invoked at runtime, not merely mentioned.
-- [ ] Live call credentials are configured safely.
+- [x] Live call credentials are configured safely.
 - [ ] One real end-to-end call is completed.
 - [ ] Transcript and evidence are captured.
 - [x] Guardian blocks forbidden-data disclosure.
@@ -17,10 +17,10 @@
 - [x] Forbidden data request → Guardian blocks
 - [x] Telephony failure → FAILED
 - [ ] Real CALL-E live call → evidence captured
-- [ ] Live failure/retry path checked
+- [x] Live provider rejection is surfaced and blocked routes cannot be retried blindly
 
 ## Devpost
-- [ ] Public demo/build URL
+- [x] Public demo/build URL
 - [ ] Public demo video under 3 minutes
 - [x] English project description
 - [x] Architecture explanation
