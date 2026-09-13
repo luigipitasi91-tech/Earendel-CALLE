@@ -18,9 +18,9 @@ Release target: CALL-E hackathon submission.
 
 These are intentionally not marked complete until there is real evidence.
 
-- [ ] Configure `CALLE_API_KEY` as a server-side deployment secret. Never expose it in frontend code or commit it.
+- [x] Configure `CALLE_API_KEY` as a server-side deployment secret. Production readiness reports configured without exposing the key.
 - [ ] Run at least one real CALL-E E2E call and retain the returned evidence/result.
-- [ ] Confirm the public frontend/backend deployment is reachable by judges.
+- [x] Confirm the public frontend/backend deployment is reachable by judges.
 - [ ] Open the required contribution PR to `CALLE-AI/awesome-phone-call-agents` and record its URL.
 - [ ] Record and publish a public demo video under 3 minutes.
 - [ ] Submit the final Devpost entry with repository, demo, CALL-E account email and upstream PR URL.
