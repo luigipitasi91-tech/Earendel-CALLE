@@ -96,6 +96,14 @@ def calle_live_call(req:LiveCalleRequest):
     result=verify_goal(contract,evidence,call_completed=completed)
     return {"mode":"LIVE_CALL_E","guardian":"BLOCKED" if audit.blocked else "ENFORCED","guardian_reasons":audit.reasons,"provider_state":provider.get("status"),"provider_task_completed":provider.get("task_completed"),"goal_state":result.state.value,"verified":result.verified,"missing":result.missing,"contradicted":result.contradicted,"reason":result.reason,"provider_evidence":provider.get("evidence",[]),"call_id":provider.get("id")}
 
+def _safe_provider_error(exc: Exception) -> str:
+    # CALL-E SDK errors contain useful HTTP/provider diagnostics, but never expose secrets.
+    raw = str(exc).strip() or type(exc).__name__
+    key = os.getenv("CALLE_API_KEY")
+    if key:
+        raw = raw.replace(key, "[REDACTED]")
+    return raw[:1000]
+
 def _run_calle_job(job_id: str, req: LiveCalleRequest):
     try:
         CALL_JOBS[job_id] = {"status":"RUNNING"}
@@ -104,7 +112,7 @@ def _run_calle_job(job_id: str, req: LiveCalleRequest):
     except HTTPException as exc:
         CALL_JOBS[job_id] = {"status":"FAILED","error":str(exc.detail),"http_status":exc.status_code}
     except Exception as exc:
-        CALL_JOBS[job_id] = {"status":"FAILED","error":f"CALL-E runtime error: {type(exc).__name__}"}
+        CALL_JOBS[job_id] = {"status":"FAILED","error":f"CALL-E runtime error: {type(exc).__name__}: {_safe_provider_error(exc)}"}
 
 @app.post("/calls/calle/start")
 def calle_start(req: LiveCalleRequest, background_tasks: BackgroundTasks):
