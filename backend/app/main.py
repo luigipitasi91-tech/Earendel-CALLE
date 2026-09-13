@@ -17,6 +17,17 @@ allowed_origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "http://local
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 TASKS: Dict[str, Dict[str, Any]] = {}; CONSENTS: Dict[str, Dict[str, Any]] = {}; FEEDBACK: list[Dict[str, Any]] = []; CALL_JOBS: Dict[str, Dict[str, Any]] = {}
 
+# Published CALL-E region/language matrix. Provider runtime availability can be narrower,
+# so passing this preflight does not claim that a route is currently available.
+CALLE_PUBLISHED_CAPABILITIES = {
+    "US": ["en-US"], "SG": ["en-SG", "en-US"], "MY": ["en-MY", "en-US"],
+    "IN": ["en-IN", "hi-IN"], "AE": ["en-AE", "ar-AE"], "AU": ["en-AU"],
+    "CA": ["en-CA", "en-US"], "GB": ["en-GB"], "VN": ["vi-VN"],
+    "DE": ["en-DE", "de-DE"], "JP": ["ja-JP"], "FR": ["fr-FR"],
+    "MX": ["es-MX"], "BR": ["pt-BR"], "ID": ["en-ID", "en-US"],
+    "PH": ["en-PH", "en-US"], "KE": ["en-KE", "en-US"],
+}
+
 class CreateTask(BaseModel): intent: str; recipient: str; contract: dict
 class ConsentRequest(BaseModel):
     task_id: str; recipient: str; purpose: str; allowed_data: list[str] = []; forbidden_actions: list[str] = []; constraints: list[str] = []; approved: bool = False
@@ -45,12 +56,24 @@ def _classify_transcript(contract: GoalContract, transcript: str) -> list[Eviden
         evidence.append(EvidenceItem(requirement_key=key,text=transcript,classification=cls,explicit=True))
     return evidence
 
+def _capability_check(region: str, locale: str) -> tuple[bool, str]:
+    region=(region or "").upper().strip(); locale=(locale or "").strip()
+    locales=CALLE_PUBLISHED_CAPABILITIES.get(region)
+    if not locales: return False, f"CALL-E does not publish recipient region {region or 'UNKNOWN'} as supported."
+    if locale not in locales: return False, f"CALL-E does not publish {region}/{locale or 'UNKNOWN'} as a supported region/language combination."
+    return True, "Published capability match. Runtime availability is provider-controlled."
+
 @app.get("/health")
 def health(): return {"status":"ok","product":"Future Call AI","epistemic_rule":"CALL_COMPLETED != TASK_COMPLETED","telephony":readiness().__dict__,"call_e":calle_readiness().__dict__}
 @app.get("/telephony/readiness")
 def telephony_readiness(): return {"readiness":readiness().__dict__,"trial_capabilities":twilio_trial_capabilities()}
 @app.get("/calle/readiness")
-def calle_provider_readiness(): return calle_readiness().__dict__
+def calle_provider_readiness():
+    r=calle_readiness().__dict__
+    return {**r,"credential_ready":bool(r.get("configured")),"runtime_route_guaranteed":False,"published_capabilities":CALLE_PUBLISHED_CAPABILITIES}
+@app.get("/calle/capability")
+def calle_capability(region:str, locale:str):
+    ok,reason=_capability_check(region,locale); return {"published_supported":ok,"reason":reason,"runtime_route_guaranteed":False}
 @app.post("/guardian/check")
 def guardian_check(contract: GoalContract,consent: ConsentLedger):
     d=evaluate_before_call(contract,consent); return {"allowed":d.allowed,"reason":d.reason}
@@ -84,7 +107,9 @@ def calle_live_call(req:LiveCalleRequest):
     if not consent or not consent.get("approved"): raise HTTPException(403,"Explicit consent required")
     contract=task["contract"]; ledger=_ledger(consent); decision=evaluate_before_call(contract,ledger)
     if not decision.allowed: raise HTTPException(403,decision.reason)
-    if not calle_readiness().configured: raise HTTPException(503,"CALL-E is not configured")
+    if not calle_readiness().configured: raise HTTPException(503,"CALL-E credentials are not configured")
+    supported,reason=_capability_check(req.region,req.locale)
+    if not supported: raise HTTPException(422,reason)
     try:
         provider=calle_create_and_wait(task=task["intent"],phone=req.phone,requirements=contract.success_conditions,metadata={"earendel_task_id":req.task_id,"guardian":"ENFORCED"},region=req.region,locale=req.locale,contract=contract,consent=ledger)
     except ValueError as exc: raise HTTPException(422,str(exc))
@@ -97,22 +122,15 @@ def calle_live_call(req:LiveCalleRequest):
     return {"mode":"LIVE_CALL_E","guardian":"BLOCKED" if audit.blocked else "ENFORCED","guardian_reasons":audit.reasons,"provider_state":provider.get("status"),"provider_task_completed":provider.get("task_completed"),"goal_state":result.state.value,"verified":result.verified,"missing":result.missing,"contradicted":result.contradicted,"reason":result.reason,"provider_evidence":provider.get("evidence",[]),"call_id":provider.get("id")}
 
 def _safe_provider_error(exc: Exception) -> str:
-    # CALL-E SDK errors contain useful HTTP/provider diagnostics, but never expose secrets.
-    raw = str(exc).strip() or type(exc).__name__
-    key = os.getenv("CALLE_API_KEY")
-    if key:
-        raw = raw.replace(key, "[REDACTED]")
+    raw = str(exc).strip() or type(exc).__name__; key = os.getenv("CALLE_API_KEY")
+    if key: raw = raw.replace(key, "[REDACTED]")
     return raw[:1000]
 
 def _run_calle_job(job_id: str, req: LiveCalleRequest):
     try:
-        CALL_JOBS[job_id] = {"status":"RUNNING"}
-        result = calle_live_call(req)
-        CALL_JOBS[job_id] = {"status":"COMPLETED","result":result}
-    except HTTPException as exc:
-        CALL_JOBS[job_id] = {"status":"FAILED","error":str(exc.detail),"http_status":exc.status_code}
-    except Exception as exc:
-        CALL_JOBS[job_id] = {"status":"FAILED","error":f"CALL-E runtime error: {type(exc).__name__}: {_safe_provider_error(exc)}"}
+        CALL_JOBS[job_id] = {"status":"RUNNING"}; result = calle_live_call(req); CALL_JOBS[job_id] = {"status":"COMPLETED","result":result}
+    except HTTPException as exc: CALL_JOBS[job_id] = {"status":"FAILED","error":str(exc.detail),"http_status":exc.status_code}
+    except Exception as exc: CALL_JOBS[job_id] = {"status":"FAILED","error":f"CALL-E runtime error: {type(exc).__name__}: {_safe_provider_error(exc)}"}
 
 @app.post("/calls/calle/start")
 def calle_start(req: LiveCalleRequest, background_tasks: BackgroundTasks):
@@ -122,10 +140,10 @@ def calle_start(req: LiveCalleRequest, background_tasks: BackgroundTasks):
     if not consent or not consent.get("approved"): raise HTTPException(403,"Explicit consent required")
     decision=evaluate_before_call(task["contract"],_ledger(consent))
     if not decision.allowed: raise HTTPException(403,decision.reason)
-    if not calle_readiness().configured: raise HTTPException(503,"CALL-E is not configured")
-    job_id=str(uuid.uuid4()); CALL_JOBS[job_id]={"status":"QUEUED"}
-    background_tasks.add_task(_run_calle_job,job_id,req)
-    return {"job_id":job_id,"status":"QUEUED"}
+    if not calle_readiness().configured: raise HTTPException(503,"CALL-E credentials are not configured")
+    supported,reason=_capability_check(req.region,req.locale)
+    if not supported: raise HTTPException(422,reason)
+    job_id=str(uuid.uuid4()); CALL_JOBS[job_id]={"status":"QUEUED"}; background_tasks.add_task(_run_calle_job,job_id,req); return {"job_id":job_id,"status":"QUEUED"}
 
 @app.get("/calls/calle/status/{job_id}")
 def calle_job_status(job_id: str):
