@@ -54,7 +54,7 @@ def test_live_endpoint_marks_guardian_block_and_refuses_verified_success(monkeyp
             "evidence": ["Appointment moved to Friday."],
         },
     )
-    r = client.post("/calls/calle/live", json={"task_id": t, "phone": "+447700900123"})
+    r = client.post("/calls/calle/live", json={"task_id": t, "phone": "+14155550100", "region": "US", "locale": "en-US"})
     assert r.status_code == 200
     body = r.json()
     assert body["guardian"] == "BLOCKED"

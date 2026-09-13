@@ -21,11 +21,11 @@ def test_result_schema_has_unknown_and_is_strict():
     s=build_result_schema(REQS); assert s["additionalProperties"] is False; assert s["properties"]["date"]["enum"] == ["yes","no","unknown"]
 def test_live_adapter_uses_official_create_and_wait_contract(monkeypatch):
     monkeypatch.setenv("CALLE_API_KEY","test_key")
-    call=create_and_wait(task="Reschedule appointment without extra charge",phone="+447700900123",requirements=REQS,metadata={"task_id":"t1"},client_factory=FakeClient)
-    assert call["status"]=="completed"; sent=FakeClient.last.calls.kwargs; assert sent["recipients"][0]["phones"]==["+447700900123"]; assert sent["result_schema"]["properties"]["fee"]["enum"][-1]=="unknown"
+    call=create_and_wait(task="Reschedule appointment without extra charge",phone="+14155550100",requirements=REQS,metadata={"task_id":"t1"},region="US",locale="en-US",client_factory=FakeClient)
+    assert call["status"]=="completed"; sent=FakeClient.last.calls.kwargs; assert sent["recipients"][0]=={"phones":["+14155550100"],"region":"US","locale":"en-US"}; assert sent["result_schema"]["properties"]["fee"]["enum"][-1]=="unknown"
 def test_invalid_phone_is_blocked_before_provider(monkeypatch):
     monkeypatch.setenv("CALLE_API_KEY","test_key")
-    with pytest.raises(ValueError): create_and_wait(task="x",phone="07700900123",requirements=REQS,client_factory=FakeClient)
+    with pytest.raises(ValueError): create_and_wait(task="x",phone="07700900123",requirements=REQS,region="US",locale="en-US",client_factory=FakeClient)
 def test_calle_task_completed_does_not_force_verified_evidence():
     call={"status":"completed","task_completed":True,"structured_result":{"date":"yes","fee":"unknown"},"evidence":["Appointment moved."]}; items=evidence_from_calle(call,REQS); assert items[0].classification==EvidenceClass.SUPPORTING; assert items[1].classification==EvidenceClass.NEUTRAL_OR_INSUFFICIENT
 
@@ -38,7 +38,7 @@ def test_guarded_task_freezes_user_authority():
 
 def test_live_adapter_sends_guardian_envelope_to_provider(monkeypatch):
     monkeypatch.setenv("CALLE_API_KEY","test_key")
-    create_and_wait(task="Move my appointment",phone="+447700900123",requirements=REQS,client_factory=FakeClient,contract=CONTRACT,consent=CONSENT)
+    create_and_wait(task="Move my appointment",phone="+14155550100",requirements=REQS,region="US",locale="en-US",client_factory=FakeClient,contract=CONTRACT,consent=CONSENT)
     sent=FakeClient.last.calls.kwargs["task"]
     assert "GUARDIAN RULES (NON-OVERRIDABLE)" in sent
     assert "Never disclose data outside PERMITTED DATA" in sent
