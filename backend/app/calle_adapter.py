@@ -84,7 +84,7 @@ def _client(factory: Callable[..., Any] | None = None):
 
 
 def create_and_wait(*, task: str, phone: str, requirements, metadata: dict | None = None,
-                    region: str = "GB", locale: str = "en-GB", client_factory=None,
+                    region: str, locale: str, client_factory=None,
                     contract=None, consent=None) -> dict:
     if not E164.match(phone):
         raise ValueError("Recipient phone must be E.164, e.g. +447700900123")

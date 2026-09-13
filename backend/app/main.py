@@ -9,6 +9,7 @@ from .guardian import evaluate_before_call
 from .runtime_guardian import audit_provider_result
 from .verify import verify_goal
 from .telephony import readiness, twilio_trial_capabilities
+from .calle_capabilities import check_route, public_routes
 from .higgsfield_adapter import HiggsfieldCreativeAdapter, CreativeRequest
 from .calle_adapter import readiness as calle_readiness, create_and_wait as calle_create_and_wait, evidence_from_calle
 
@@ -17,22 +18,11 @@ allowed_origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "http://local
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 TASKS: Dict[str, Dict[str, Any]] = {}; CONSENTS: Dict[str, Dict[str, Any]] = {}; FEEDBACK: list[Dict[str, Any]] = []; CALL_JOBS: Dict[str, Dict[str, Any]] = {}
 
-# Published CALL-E region/language matrix. Provider runtime availability can be narrower,
-# so passing this preflight does not claim that a route is currently available.
-CALLE_PUBLISHED_CAPABILITIES = {
-    "US": ["en-US"], "SG": ["en-SG", "en-US"], "MY": ["en-MY", "en-US"],
-    "IN": ["en-IN", "hi-IN"], "AE": ["en-AE", "ar-AE"], "AU": ["en-AU"],
-    "CA": ["en-CA", "en-US"], "GB": ["en-GB"], "VN": ["vi-VN"],
-    "DE": ["en-DE", "de-DE"], "JP": ["ja-JP"], "FR": ["fr-FR"],
-    "MX": ["es-MX"], "BR": ["pt-BR"], "ID": ["en-ID", "en-US"],
-    "PH": ["en-PH", "en-US"], "KE": ["en-KE", "en-US"],
-}
-
 class CreateTask(BaseModel): intent: str; recipient: str; contract: dict
 class ConsentRequest(BaseModel):
     task_id: str; recipient: str; purpose: str; allowed_data: list[str] = []; forbidden_actions: list[str] = []; constraints: list[str] = []; approved: bool = False
 class SimulateCall(BaseModel): task_id: str; transcript: str
-class LiveCalleRequest(BaseModel): task_id: str; phone: str; region: str = "GB"; locale: str = "en-GB"
+class LiveCalleRequest(BaseModel): task_id: str; phone: str; region: str; locale: str
 class FeedbackRequest(BaseModel): task_id: str; stars: int = Field(ge=1, le=5); comment: str = ""
 
 def _normalize_contract(raw: dict) -> GoalContract:
@@ -56,13 +46,6 @@ def _classify_transcript(contract: GoalContract, transcript: str) -> list[Eviden
         evidence.append(EvidenceItem(requirement_key=key,text=transcript,classification=cls,explicit=True))
     return evidence
 
-def _capability_check(region: str, locale: str) -> tuple[bool, str]:
-    region=(region or "").upper().strip(); locale=(locale or "").strip()
-    locales=CALLE_PUBLISHED_CAPABILITIES.get(region)
-    if not locales: return False, f"CALL-E does not publish recipient region {region or 'UNKNOWN'} as supported."
-    if locale not in locales: return False, f"CALL-E does not publish {region}/{locale or 'UNKNOWN'} as a supported region/language combination."
-    return True, "Published capability match. Runtime availability is provider-controlled."
-
 @app.get("/health")
 def health(): return {"status":"ok","product":"Future Call AI","epistemic_rule":"CALL_COMPLETED != TASK_COMPLETED","telephony":readiness().__dict__,"call_e":calle_readiness().__dict__}
 @app.get("/telephony/readiness")
@@ -70,10 +53,10 @@ def telephony_readiness(): return {"readiness":readiness().__dict__,"trial_capab
 @app.get("/calle/readiness")
 def calle_provider_readiness():
     r=calle_readiness().__dict__
-    return {**r,"credential_ready":bool(r.get("configured")),"runtime_route_guaranteed":False,"published_capabilities":CALLE_PUBLISHED_CAPABILITIES}
+    return {**r,"credential_ready":bool(r.get("configured")),"runtime_route_guaranteed":False,"controlled_live_routes":public_routes()}
 @app.get("/calle/capability")
-def calle_capability(region:str, locale:str):
-    ok,reason=_capability_check(region,locale); return {"published_supported":ok,"reason":reason,"runtime_route_guaranteed":False}
+def calle_capability(phone:str, region:str, locale:str):
+    ok,reason=check_route(phone=phone,region=region,locale=locale); return {"allowed":ok,"reason":reason,"runtime_route_guaranteed":False}
 @app.post("/guardian/check")
 def guardian_check(contract: GoalContract,consent: ConsentLedger):
     d=evaluate_before_call(contract,consent); return {"allowed":d.allowed,"reason":d.reason}
@@ -108,7 +91,7 @@ def calle_live_call(req:LiveCalleRequest):
     contract=task["contract"]; ledger=_ledger(consent); decision=evaluate_before_call(contract,ledger)
     if not decision.allowed: raise HTTPException(403,decision.reason)
     if not calle_readiness().configured: raise HTTPException(503,"CALL-E credentials are not configured")
-    supported,reason=_capability_check(req.region,req.locale)
+    supported,reason=check_route(phone=req.phone,region=req.region,locale=req.locale)
     if not supported: raise HTTPException(422,reason)
     try:
         provider=calle_create_and_wait(task=task["intent"],phone=req.phone,requirements=contract.success_conditions,metadata={"earendel_task_id":req.task_id,"guardian":"ENFORCED"},region=req.region,locale=req.locale,contract=contract,consent=ledger)
@@ -141,7 +124,7 @@ def calle_start(req: LiveCalleRequest, background_tasks: BackgroundTasks):
     decision=evaluate_before_call(task["contract"],_ledger(consent))
     if not decision.allowed: raise HTTPException(403,decision.reason)
     if not calle_readiness().configured: raise HTTPException(503,"CALL-E credentials are not configured")
-    supported,reason=_capability_check(req.region,req.locale)
+    supported,reason=check_route(phone=req.phone,region=req.region,locale=req.locale)
     if not supported: raise HTTPException(422,reason)
     job_id=str(uuid.uuid4()); CALL_JOBS[job_id]={"status":"QUEUED"}; background_tasks.add_task(_run_calle_job,job_id,req); return {"job_id":job_id,"status":"QUEUED"}
 
