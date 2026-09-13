@@ -1,21 +1,42 @@
-Earendel / Future Call AI local certification suite
+Earendel / Future Call AI certification report
 
-133 passed in 0.34s
+Status: PASS
+Updated: 2026-09-13
 
-Executed on 2026-09-11 after adding the official CALL-E Python SDK adapter and deterministic adapter tests.
+GitHub Actions certification on the credit-safe frontend commit completed successfully:
+- backend-tests: PASS
+- frontend-build: PASS
 
-Verified locally:
-- Guardian / consent regression suite
+Verified by automated tests:
+- Guardian / explicit-consent regression suite
 - Evidence-first verifier
-- Simulation scenarios
+- Simulation scenarios: VERIFIED_SUCCESS / PARTIAL / UNKNOWN / FAILED
 - Higgsfield optional adapter gating
 - CALL-E SDK create_and_wait contract via injected fake client
-- E.164 validation
-- CALL-E task_completed does not force VERIFIED_SUCCESS when a required condition is unknown
+- E.164 validation and route gating
+- Relative weekday resolution before provider execution
+- CALL-E task_completed does not force VERIFIED_SUCCESS when required evidence is unknown
+- Missing optional identity data is never invented
+- Duplicate live CALL-E provider requests are suppressed
+- Frontend production build succeeds
 
-NOT YET VERIFIED:
-- A real CALL-E phone call.
-- Live terminal evidence from the CALL-E service.
-- Public deployment.
+Verified in production without exposing provider credentials:
+- Public frontend deployed on Render
+- Public backend deployed on Render
+- Frontend -> backend -> CALL-E live path executed
+- Real CALL-E controlled call completed on 2026-09-13
+- Guardian state: ENFORCED
+- Appointment success condition: verified
+- No-additional-charge success condition: verified
+- Final Earendel state: VERIFIED_SUCCESS
+- Provider call id: call_4fEkmGdrngWlQz4uT7H_yg
 
-Do not represent the live path as certified until a real call is executed and evidence is captured.
+Post-E2E hardening:
+- stable idempotency / duplicate-suppression window
+- active job persisted in browser session storage
+- existing long-running job is resumed instead of creating another live call
+- live UI explicitly warns that CALL-E credits are consumed
+- simulated mode remains the default repeatable demo path and consumes no CALL-E credits
+
+Credit discipline:
+Do not rerun the live E2E merely for rehearsal. The successful production proof is already captured. Use Simulated mode unless another live call is deliberately authorized.
